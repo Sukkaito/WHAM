@@ -29,7 +29,9 @@ def build_network(cfg, smpl):
     
     # Load Checkpoint
     if os.path.isfile(cfg.TRAIN.CHECKPOINT):
-        checkpoint = torch.load(cfg.TRAIN.CHECKPOINT)
+        # AUTO_MAP_LOCATION_WHAM: CPU fallback when CUDA is unavailable
+        map_loc = 'cpu' if (not torch.cuda.is_available() or getattr(cfg,'DEVICE','cuda')=='cpu') else None
+        checkpoint = torch.load(cfg.TRAIN.CHECKPOINT, map_location=map_loc) if map_loc else torch.load(cfg.TRAIN.CHECKPOINT)
         ignore_keys = ['smpl.body_pose', 'smpl.betas', 'smpl.global_orient', 'smpl.J_regressor_extra', 'smpl.J_regressor_eval']
         model_state_dict = {k: v for k, v in checkpoint['model'].items() if k not in ignore_keys}
         network.load_state_dict(model_state_dict, strict=False)

@@ -1,0 +1,10 @@
+.git
+__pycache__/
+*.pyc
+output/
+dataset/
+checkpoints/
+*.mp4
+*.mov
+*.mkv
+*.avi

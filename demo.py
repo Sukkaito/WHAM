@@ -206,20 +206,37 @@ if __name__ == '__main__':
     cfg = get_cfg_defaults()
     cfg.merge_from_file('configs/yamls/demo.yaml')
     
-    logger.info(f'GPU name -> {torch.cuda.get_device_name()}')
-    logger.info(f'GPU feat -> {torch.cuda.get_device_properties("cuda")}')    
-    
+    print("Testing--------------------------------")
+
+    # AUTO_CPU_FALLBACK_WHAM
+    # Auto CPU fallback on macOS Docker (no NVIDIA CUDA runtime)
+    if not torch.cuda.is_available():
+        print("No CUDA found")
+        cfg.DEVICE = 'cpu'
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        try:
+            import torch.backends.cudnn as cudnn
+            cudnn.enabled = False
+        except Exception:
+            pass
+        logger.warning('CUDA not available -> switch cfg.DEVICE=cpu')
+    # END_AUTO_CPU_FALLBACK_WHAM
+
+    print("DONE TESTING0--------------------")
+    print(f'cfg.DEVICE = {cfg.DEVICE}')
+
     # ========= Load WHAM ========= #
     smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
     smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
     network = build_network(cfg, smpl)
     network.eval()
-    
+
     # Output folder
     sequence = '.'.join(args.video.split('/')[-1].split('.')[:-1])
     output_pth = osp.join(args.output_pth, sequence)
     os.makedirs(output_pth, exist_ok=True)
-    
+
+    print("Start runnnnn-------------")
     run(cfg, 
         args.video, 
         output_pth, 
