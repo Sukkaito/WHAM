@@ -28,7 +28,7 @@ def _get_docker_base_args(gpu_id: str, container_name: str = "") -> list[str]:
     
     Args:
         gpu_id: GPU device ID (e.g., "0", "1")
-        container_name: Optional container name; if empty, --detach is skipped
+        container_name: Optional container name
     
     Returns:
         List of base docker run arguments before image/command
@@ -192,9 +192,18 @@ def execute_docker_detached(
     """
     if cwd is None:
         cwd = settings.repo_dir
+
+    detached_cmd = list(cmd)
+    if "--detach" not in detached_cmd:
+        try:
+            run_idx = detached_cmd.index("run")
+            detached_cmd.insert(run_idx + 1, "--detach")
+        except ValueError:
+            # Fallback: keep original command shape if it is not a docker-run command.
+            pass
     
     proc = subprocess.run(
-        cmd,
+        detached_cmd,
         check=False,
         capture_output=True,
         text=True,
