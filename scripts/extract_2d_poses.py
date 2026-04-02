@@ -11,7 +11,8 @@ Usage:
     python extract_2d_poses.py \\
         --video path/to/video.mp4 \\
         --output_dir output/path \\
-        [--device cuda:0] [--estimate_local_only] [--calib calib.txt]
+    [--device cuda:0] [--estimate_local_only] [--calib calib.txt] \\
+    [--visualize] [--save_pkl] [--id 0] [--score_thr 0.2] [--overlay_out output.mp4]
 """
 import argparse
 import os.path as osp
@@ -25,6 +26,7 @@ import torch
 # WHAM imports
 from configs.config import get_cfg_defaults
 from lib.models.preproc.detector import DetectionModel
+from scripts.pose2d_artifact_utils import pick_best_track, render_overlay_video
 
 try:
     from lib.models.preproc.slam import SLAMModel
@@ -56,9 +58,37 @@ def main():
         type=str,
         help="Optional calibration file path for SLAM",
     )
+    ap.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Render 2D overlay video from tracking results (like extract_3d visualize flag)",
+    )
+    ap.add_argument(
+        "--save_pkl",
+        action="store_true",
+        help="Compatibility flag with extract_3d_poses; tracking/slam artifacts are always saved",
+    )
+    ap.add_argument(
+        "--id",
+        type=int,
+        default=None,
+        help="Track id to render; if omitted, the longest track is used",
+    )
+    ap.add_argument(
+        "--score_thr",
+        type=float,
+        default=0.2,
+        help="Confidence threshold for rendered keypoints",
+    )
+    ap.add_argument(
+        "--overlay_out",
+        default=None,
+        type=str,
+        help="Optional overlay output path. Defaults to <output_dir>/pose2d_overlay.mp4",
+    )
     args = ap.parse_args()
 
-    cfg = get_cfg_defaults()
+    _ = get_cfg_defaults()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,6 +109,8 @@ def main():
     print(f"[extract_2d_poses] Video: {args.video}")
     print(f"[extract_2d_poses] FPS: {fps}, Length: {length} frames, Resolution: {width}x{height}")
     print(f"[extract_2d_poses] Device: {args.device}")
+    print(f"[extract_2d_poses] visualize: {args.visualize}")
+    print(f"[extract_2d_poses] save_pkl: {args.save_pkl}")
     print(f"[extract_2d_poses] Output: {output_dir}/tracking_results.pth")
     print(f"[extract_2d_poses] Output: {output_dir}/slam_results.pth")
 
@@ -140,6 +172,27 @@ def main():
     print(f"[extract_2d_poses] Output: {num_persons} person(s), {num_frames_tracked} frame(s) with keypoints")
     print(f"[extract_2d_poses] Saved: {out_path}")
     print(f"[extract_2d_poses] Saved: {slam_out_path}")
+
+    if args.visualize:
+        if not isinstance(tracking_results, dict) or len(tracking_results) == 0:
+            raise RuntimeError("Cannot visualize: tracking_results are empty or invalid")
+
+        track_id = args.id if args.id is not None else pick_best_track(tracking_results)
+        if track_id not in tracking_results:
+            raise RuntimeError(
+                f"Cannot visualize: track id={track_id} not in available ids {list(tracking_results.keys())}"
+            )
+
+        overlay_out = args.overlay_out or str(output_dir / "pose2d_overlay.mp4")
+        print(f"[extract_2d_poses] Rendering overlay: {overlay_out}")
+        render_overlay_video(
+            video_path=args.video,
+            track_record=tracking_results[track_id],
+            out_mp4=overlay_out,
+            score_thr=args.score_thr,
+        )
+        print(f"[extract_2d_poses] Saved: {overlay_out}")
+
     print(f"[extract_2d_poses] Success")
 
 

@@ -1,3 +1,5 @@
+# Deprecated
+
 import argparse
 from pathlib import Path
 import joblib
