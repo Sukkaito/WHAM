@@ -21,10 +21,49 @@ class Settings:
         repo_root = os.getenv("WHAM_REPO_DIR", "/mnt/e/Code/IT4788/WHAM/WHAM")
         self.wham_data_dir = Path(data_root)
         self.repo_dir = Path(repo_root)
+        self.database_url = os.getenv("WHAM_DATABASE_URL")
         self.videos_dir = self.wham_data_dir / "videos"
         self.video_index_file = self.videos_dir / ".video_index.json"
         self.docker_image = os.getenv("WHAM_DOCKER_IMAGE", "wham-local")
         self.default_gpu_id = os.getenv("WHAM_GPU_ID", "0")
+        self.pose2d_visualize = os.getenv("WHAM_POSE2D_VISUALIZE", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.pose2d_estimate_local_only = os.getenv(
+            "WHAM_POSE2D_ESTIMATE_LOCAL_ONLY",
+            "false",
+        ).lower() in {"1", "true", "yes", "on"}
+        self.pose3d_visualize = os.getenv("WHAM_POSE3D_VISUALIZE", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.pose3d_estimate_local_only = os.getenv(
+            "WHAM_POSE3D_ESTIMATE_LOCAL_ONLY",
+            "false",
+        ).lower() in {"1", "true", "yes", "on"}
+        self.pose3d_save_pkl = os.getenv("WHAM_POSE3D_SAVE_PKL", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.pose3d_run_smplify = os.getenv("WHAM_POSE3D_RUN_SMPLIFY", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.docker_cleanup_enabled = os.getenv("WHAM_DOCKER_CLEANUP_ENABLED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.allowed_video_extensions = {
             ".mp4",
             ".mov",
@@ -41,6 +80,8 @@ class Settings:
         print(f"  Repo dir:     {self.repo_dir}")
         print(f"  Docker image: {self.docker_image}")
         print(f"  GPU ID:       {self.default_gpu_id}")
+        print(f"  Docker cleanup enabled: {self.docker_cleanup_enabled}")
+        print(f"  Database URL: {self.database_url or '<unset>'}")
 
 
 settings = Settings()

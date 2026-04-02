@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, status
 
 from app.models.schemas import (
-    JobStatus,
     JobStatusResponse,
     PoseJobAcceptedResponse,
     PoseJobSubmitRequest,
 )
+from app.services.job_service import get_job_status as load_job_status
 from app.services.pose2d_service import submit_pose2d
 from app.services.pose3d_service import submit_pose3d
 
@@ -42,9 +42,13 @@ def submit_pose3d_job(payload: PoseJobSubmitRequest) -> PoseJobAcceptedResponse:
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 def get_job_status(job_id: str) -> JobStatusResponse:
-    """Phase 1 contract endpoint for job status lookup."""
-    return JobStatusResponse(
-        job_id=job_id,
-        job_name=f"placeholder-{job_id}",
-        status=JobStatus.queued,
-    )
+    """Return durable job lifecycle state from PostgreSQL."""
+    try:
+        return load_job_status(job_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"job lookup failed: {exc}",
+        ) from exc

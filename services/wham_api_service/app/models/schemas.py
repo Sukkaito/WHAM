@@ -49,6 +49,8 @@ class JobStatusResponse(BaseModel):
     source_video_id: Optional[str] = None
     result_video_id: Optional[str] = None
     status: JobStatus
+    container_name: Optional[str] = None
+    exit_code: Optional[int] = None
     error_summary: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

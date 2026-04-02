@@ -8,6 +8,7 @@ Provides deterministic Docker command builders and executors for:
 """
 
 import subprocess
+import shlex
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,7 +23,11 @@ class DockerExecResult(NamedTuple):
     success: bool
 
 
-def _get_docker_base_args(gpu_id: str, container_name: str = "") -> list[str]:
+def _get_docker_base_args(
+    gpu_id: str,
+    container_name: str = "",
+    remove_on_exit: bool = True,
+) -> list[str]:
     """
     Build common Docker run arguments for WHAM jobs.
     
@@ -36,7 +41,6 @@ def _get_docker_base_args(gpu_id: str, container_name: str = "") -> list[str]:
     args = [
         "docker",
         "run",
-        "--rm",
         "--platform",
         "linux/amd64",
         "--gpus",
@@ -56,6 +60,9 @@ def _get_docker_base_args(gpu_id: str, container_name: str = "") -> list[str]:
         "-w",
         "/code",
     ]
+
+    if remove_on_exit:
+        args.insert(2, "--rm")
     
     if container_name:
         args.extend(["--name", container_name])
@@ -63,10 +70,28 @@ def _get_docker_base_args(gpu_id: str, container_name: str = "") -> list[str]:
     return args
 
 
+def wait_for_container(container_name: str) -> DockerExecResult:
+    return execute_docker_blocking(["docker", "wait", container_name], cwd=settings.repo_dir)
+
+
+def inspect_container(container_name: str) -> DockerExecResult:
+    return execute_docker_blocking(
+        ["docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", container_name],
+        cwd=settings.repo_dir,
+    )
+
+
+def remove_container(container_name: str) -> DockerExecResult:
+    return execute_docker_blocking(["docker", "rm", "-f", container_name], cwd=settings.repo_dir)
+
+
 def build_extract_2d_cmd(
     source_name: str,
     output_dir: str,
     gpu_id: str,
+    estimate_local_only: bool = False,
+    calib: str | None = None,
+    visualize: bool = True,
 ) -> list[str]:
     """
     Build docker command to extract 2D preprocessing artifacts.
@@ -81,12 +106,26 @@ def build_extract_2d_cmd(
     Returns:
         List of docker run command args
     """
-    cmd = _get_docker_base_args(gpu_id)
+    cmd = _get_docker_base_args(gpu_id, remove_on_exit=False)
+    source_arg = shlex.quote(f"/videos/{source_name}")
+    output_arg = shlex.quote(output_dir)
+    inner = [
+        "python3 scripts/extract_2d_poses.py",
+        f"--video {source_arg}",
+        f"--output_dir {output_arg}",
+        "--device cuda:0",
+    ]
+    if estimate_local_only:
+        inner.append("--estimate_local_only")
+    if calib:
+        inner.append(f"--calib {shlex.quote(calib)}")
+    if visualize:
+        inner.append("--visualize")
     cmd.extend([
         settings.docker_image,
         "bash",
         "-lc",
-        f"python3 scripts/extract_2d_poses.py --video /videos/{source_name} --output_dir {output_dir} --device cuda:0",
+        " ".join(inner),
     ])
     return cmd
 
@@ -95,9 +134,12 @@ def build_extract_3d_cmd(
     source_name: str,
     output_dir: str,
     gpu_id: str,
+    estimate_local_only: bool = False,
     visualize: bool = False,
     save_pkl: bool = True,
     run_smplify: bool = False,
+    calib: str | None = None,
+    result_name: str | None = None,
 ) -> list[str]:
     """
     Build docker command to run WHAM 3D pose inference on preprocessing artifacts.
@@ -115,12 +157,17 @@ def build_extract_3d_cmd(
     Returns:
         List of docker run command args
     """
+    source_arg = shlex.quote(f"/videos/{source_name}")
+    output_arg = shlex.quote(output_dir)
     cmd_parts = [
         "python3 scripts/extract_3d_poses.py",
-        f"--video /videos/{source_name}",
-        f"--output_dir {output_dir}",
+        f"--video {source_arg}",
+        f"--output_dir {output_arg}",
         "--device cuda:0",
     ]
+
+    if estimate_local_only:
+        cmd_parts.append("--estimate_local_only")
 
     if visualize:
         cmd_parts.append("--visualize")
@@ -128,10 +175,27 @@ def build_extract_3d_cmd(
         cmd_parts.append("--save_pkl")
     if run_smplify:
         cmd_parts.append("--run_smplify")
+    if calib:
+        cmd_parts.append(f"--calib {shlex.quote(calib)}")
 
     inner = " ".join(cmd_parts)
+    if result_name:
+        inner = (
+            f"mkdir -p {output_arg} && "
+            f"if [ ! -f {shlex.quote(f'{output_dir}/tracking_results.pth')} ] || [ ! -f {shlex.quote(f'{output_dir}/slam_results.pth')} ]; then "
+            f"python3 scripts/extract_2d_poses.py --video {source_arg} --output_dir {output_arg} --device cuda:0"
+        )
+        if estimate_local_only:
+            inner += " --estimate_local_only"
+        if calib:
+            inner += f" --calib {shlex.quote(calib)}"
+        inner += "; fi && " + " ".join(cmd_parts)
+        inner += (
+            f" && if [ -f {shlex.quote(f'{output_dir}/output.mp4')} ]; then "
+            f"mv {shlex.quote(f'{output_dir}/output.mp4')} {shlex.quote(f'{output_dir}/{result_name}')}; fi"
+        )
 
-    cmd = _get_docker_base_args(gpu_id)
+    cmd = _get_docker_base_args(gpu_id, remove_on_exit=False)
     cmd.extend([
         settings.docker_image,
         "bash",
@@ -223,6 +287,8 @@ def build_pose2d_pipeline_cmd(
     job_id: str,
     result_name: str,
     gpu_id: str,
+    estimate_local_only: bool = False,
+    calib: str | None = None,
 ) -> list[str]:
     """
     Build docker command for complete pose2d pipeline (extract + optional overlay render).
@@ -244,11 +310,16 @@ def build_pose2d_pipeline_cmd(
     out_mp4 = f"{track_dir}/{result_name}"
 
     inner = (
-        f"mkdir -p {track_dir} && "
-        f"python3 scripts/extract_2d_poses.py --video /videos/{source_name} --output_dir {track_dir} --device cuda:0 --visualize --overlay_out {out_mp4}"
+        f"mkdir -p {shlex.quote(track_dir)} && "
+        f"python3 scripts/extract_2d_poses.py --video {shlex.quote(f'/videos/{source_name}')} --output_dir {shlex.quote(track_dir)} --device cuda:0"
     )
+    if estimate_local_only:
+        inner += " --estimate_local_only"
+    if calib:
+        inner += f" --calib {shlex.quote(calib)}"
+    inner += f" --visualize --overlay_out {shlex.quote(out_mp4)}"
 
-    cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose2d-{job_id}")
+    cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose2d-{job_id}", remove_on_exit=False)
     cmd.extend([
         settings.docker_image,
         "bash",
@@ -263,9 +334,12 @@ def build_pose3d_pipeline_cmd(
     job_id: str,
     output_dir: str,
     gpu_id: str,
+    result_name: str,
+    estimate_local_only: bool = False,
     visualize: bool = True,
     save_pkl: bool = True,
     run_smplify: bool = False,
+    calib: str | None = None,
 ) -> list[str]:
     """
     Build detached pose3d pipeline command with ordered preprocessing then 3D inference.
@@ -280,27 +354,38 @@ def build_pose3d_pipeline_cmd(
 
     infer_parts = [
         "python3 scripts/extract_3d_poses.py",
-        f"--video /videos/{source_name}",
-        f"--output_dir {output_dir}",
+        f"--video {shlex.quote(f'/videos/{source_name}')}",
+        f"--output_dir {shlex.quote(output_dir)}",
         "--device cuda:0",
     ]
+    if estimate_local_only:
+        infer_parts.append("--estimate_local_only")
     if visualize:
         infer_parts.append("--visualize")
     if save_pkl:
         infer_parts.append("--save_pkl")
     if run_smplify:
         infer_parts.append("--run_smplify")
+    if calib:
+        infer_parts.append(f"--calib {shlex.quote(calib)}")
 
     infer_cmd = " ".join(infer_parts)
     inner = (
-        f"mkdir -p {output_dir} && "
-        f"if [ ! -f {track_pth} ] || [ ! -f {slam_pth} ]; then "
-        f"python3 scripts/extract_2d_poses.py --video /videos/{source_name} --output_dir {output_dir} --device cuda:0; "
-        f"fi && "
-        f"{infer_cmd}"
+        f"mkdir -p {shlex.quote(output_dir)} && "
+        f"if [ ! -f {shlex.quote(track_pth)} ] || [ ! -f {shlex.quote(slam_pth)} ]; then "
+        f"python3 scripts/extract_2d_poses.py --video {shlex.quote(f'/videos/{source_name}')} --output_dir {shlex.quote(output_dir)} --device cuda:0"
+    )
+    if estimate_local_only:
+        inner += " --estimate_local_only"
+    if calib:
+        inner += f" --calib {shlex.quote(calib)}"
+    inner += "; fi && " + infer_cmd
+    inner += (
+        f" && if [ -f {shlex.quote(f'{output_dir}/output.mp4')} ]; then "
+        f"mv {shlex.quote(f'{output_dir}/output.mp4')} {shlex.quote(f'{output_dir}/{result_name}')}; fi"
     )
 
-    cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose3d-{job_id}")
+    cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose3d-{job_id}", remove_on_exit=False)
     cmd.extend([
         settings.docker_image,
         "bash",

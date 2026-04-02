@@ -46,9 +46,11 @@ source_video → extract_2d_poses.py → tracking_results.pth
 
 ### Storage
 
-**Temporary (Phase 2):** JSON index at `/WHAM_data/videos/.video_index.json`
-- Stores video metadata, job metadata, lineage associations
-- Replaced by PostgreSQL in Phase 3
+Video storage remains on the existing filesystem-backed setup for now:
+- source and derived media live under `/WHAM_data/videos/`
+- video metadata and lineage associations continue to use the JSON index at `/WHAM_data/videos/.video_index.json`
+
+Job lifecycle state is PostgreSQL-backed when `WHAM_DATABASE_URL` is configured. If the database URL is not set, the service falls back to the current JSON job index so the API remains usable during incremental rollout.
 
 **Directory Layout:**
 ```
