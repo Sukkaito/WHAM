@@ -71,16 +71,9 @@ def _validate_video_upload(file: UploadFile, safe_filename: str) -> None:
 
 def _authorize_download(record: dict[str, Any], auth: AuthPayload) -> None:
     owner_subject = record.get("uploaded_by")
-    owner_token = record.get("uploaded_token")
 
     # Temporary auth policy until external auth integration is added.
     if auth.subject != owner_subject:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Download not authorized for this video.",
-        )
-
-    if owner_token is not None and auth.token != owner_token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Download not authorized for this video.",
@@ -124,7 +117,7 @@ async def store_video(file: UploadFile, auth: AuthPayload) -> UploadVideoRespons
         "content_type": file.content_type,
         "size_bytes": bytes_written,
         "uploaded_by": auth.subject,
-        "uploaded_token": auth.token,
+        "uploaded_api_key": auth.api_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "kind": "source",
         "status": "stored",

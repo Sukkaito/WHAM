@@ -79,7 +79,7 @@ def _touch_json_index(
             "storage_path": result_storage_path,
             "content_type": "video/mp4",
             "uploaded_by": runtime_params.get("auth_subject"),
-            "uploaded_token": runtime_params.get("auth_token"),
+            "uploaded_api_key": runtime_params.get("auth_api_key"),
             "created_at": _now().isoformat(),
             "kind": "derived",
             "status": status_value,

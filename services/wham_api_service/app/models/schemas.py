@@ -19,7 +19,7 @@ class JobStatus(str, Enum):
 
 class AuthPayload(BaseModel):
     subject: str = Field(..., min_length=1)
-    token: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1)
 
 
 class UploadVideoResponse(BaseModel):
@@ -30,7 +30,6 @@ class UploadVideoResponse(BaseModel):
 
 class PoseJobSubmitRequest(BaseModel):
     source_video_id: str = Field(..., min_length=1)
-    auth: AuthPayload
 
 
 class PoseJobAcceptedResponse(BaseModel):

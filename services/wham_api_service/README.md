@@ -2,6 +2,38 @@
 
 This folder contains a FastAPI-based media and pose service for WHAM inference workflows.
 
+## Quick Start
+
+1. Copy [`.env.example`](.env.example) to `.env` and set at least `WHAM_DATABASE_URL`, `WHAM_AUTH_SUBJECT_HEADER`, `WHAM_AUTH_API_KEY_HEADER`, and the bootstrap API key settings.
+2. Ensure the expected WHAM data layout exists under `WHAM_DATA_DIR`:
+  - `videos/`
+  - `dataset/`
+  - `checkpoints/`
+  - `output/`
+3. Start the service with your normal FastAPI entrypoint.
+
+## Environment Reference
+
+- `WHAM_DATA_DIR`: host root for videos, dataset, checkpoints, and output.
+- `WHAM_REPO_DIR`: repository root used for Docker command execution.
+- `WHAM_DATABASE_URL`: PostgreSQL connection string for job persistence.
+- `WHAM_AUTH_SUBJECT_HEADER`: subject header name, default `X-WHAM-Subject`.
+- `WHAM_AUTH_API_KEY_HEADER`: API key header name, default `X-WHAM-Api-Key`.
+- `WHAM_BOOTSTRAP_API_KEYS`: optional CSV bootstrap list like `service-a:key-1,service-b:key-2`.
+- `WHAM_BOOTSTRAP_API_KEYS_FILE`: optional JSON bootstrap file for API keys.
+- `WHAM_DOCKER_CLEANUP_ENABLED`: remove exited job containers after status is recorded.
+- `WHAM_POSE2D_VISUALIZE`, `WHAM_POSE3D_VISUALIZE`: server-owned execution defaults.
+- `WHAM_POSE2D_ESTIMATE_LOCAL_ONLY`, `WHAM_POSE3D_ESTIMATE_LOCAL_ONLY`: local-only fallback flags.
+- `WHAM_POSE3D_SAVE_PKL`, `WHAM_POSE3D_RUN_SMPLIFY`: pose3d runtime profile flags.
+
+## Auth Model
+
+All protected endpoints require these headers:
+- `X-WHAM-Subject`
+- `X-WHAM-Api-Key`
+
+Keys are verified against the PostgreSQL `api_keys` table, with optional bootstrap loading during startup.
+
 ## Implemented in Phase 2
 
 ### Core Services
@@ -51,6 +83,64 @@ Video storage remains on the existing filesystem-backed setup for now:
 - video metadata and lineage associations continue to use the JSON index at `/WHAM_data/videos/.video_index.json`
 
 Job lifecycle state is PostgreSQL-backed when `WHAM_DATABASE_URL` is configured. If the database URL is not set, the service falls back to the current JSON job index so the API remains usable during incremental rollout.
+
+## API Notes
+
+- `POST /v1/videos/upload`: multipart upload with `file` plus auth headers.
+- `GET /v1/videos/{video_id}/download`: download with auth headers.
+- `POST /v1/pose2d/jobs`: JSON body with `source_video_id` plus auth headers.
+- `POST /v1/pose3d/jobs`: JSON body with `source_video_id` plus auth headers.
+- `GET /v1/jobs/{job_id}`: job lifecycle lookup.
+- `GET /v1/videos/{video_id}/associations`: source-to-derived lineage query.
+
+## PostgreSQL Setup
+
+Create the database and set `WHAM_DATABASE_URL` to a SQLAlchemy URL such as:
+
+```text
+postgresql+psycopg://wham:wham@localhost:5432/wham
+```
+
+On startup the service creates the required tables if the database is reachable. This includes job state and persisted API keys.
+
+## Example Requests
+
+Upload:
+
+```bash
+curl -X POST http://localhost:8000/v1/videos/upload \
+  -H 'X-WHAM-Subject: service-a' \
+  -H 'X-WHAM-Api-Key: key-1' \
+  -F 'file=@examples/IMG_9732.mov'
+```
+
+Pose2D job:
+
+```bash
+curl -X POST http://localhost:8000/v1/pose2d/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'X-WHAM-Subject: service-a' \
+  -H 'X-WHAM-Api-Key: key-1' \
+  -d '{"source_video_id":"vid_123"}'
+```
+
+Pose3D job:
+
+```bash
+curl -X POST http://localhost:8000/v1/pose3d/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'X-WHAM-Subject: service-a' \
+  -H 'X-WHAM-Api-Key: key-1' \
+  -d '{"source_video_id":"vid_123"}'
+```
+
+Job status:
+
+```bash
+curl http://localhost:8000/v1/jobs/job_123 \
+  -H 'X-WHAM-Subject: service-a' \
+  -H 'X-WHAM-Api-Key: key-1'
+```
 
 **Directory Layout:**
 ```

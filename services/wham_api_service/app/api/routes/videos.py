@@ -1,16 +1,17 @@
-from fastapi import APIRouter, File, Form, UploadFile, status
+import logging
+
+from fastapi import APIRouter, File, UploadFile, Request, status
 from fastapi.responses import FileResponse
 
-from app.models.schemas import (
-    AuthPayload,
-    UploadVideoResponse,
-    VideoAssociationsResponse,
-)
+from app.core.auth import get_request_auth
+from app.models.schemas import UploadVideoResponse, VideoAssociationsResponse
 from app.services.video_service import (
     get_video,
     list_assoc,
     store_video,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -21,29 +22,37 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_video(
+    request: Request,
     file: UploadFile = File(...),
-    auth_subject: str = Form(...),
-    auth_token: str = Form(...),
 ) -> UploadVideoResponse:
     """Phase 2 step 1: store uploaded source video and persist metadata."""
-    auth = AuthPayload(subject=auth_subject, token=auth_token)
-    return await store_video(file=file, auth=auth)
+    auth = get_request_auth(request)
+    logger.info("upload_video request subject=%s filename=%s", auth.subject, file.filename)
+    try:
+        return await store_video(file=file, auth=auth)
+    except Exception:
+        logger.exception("upload_video failed subject=%s filename=%s", auth.subject, file.filename)
+        raise
 
 
 @router.get("/videos/{video_id}/download")
 def download_video(
+    request: Request,
     video_id: str,
-    auth_subject: str,
-    auth_token: str,
 ):
     """Phase 2 step 2: authorize and stream stored video by video_id."""
-    auth = AuthPayload(subject=auth_subject, token=auth_token)
-    video_record = get_video(video_id=video_id, auth=auth)
-    return FileResponse(
-        path=video_record["storage_path"],
-        media_type=video_record["content_type"],
-        filename=video_record["source_filename"],
-    )
+    auth = get_request_auth(request)
+    logger.info("download_video request subject=%s video_id=%s", auth.subject, video_id)
+    try:
+        video_record = get_video(video_id=video_id, auth=auth)
+        return FileResponse(
+            path=video_record["storage_path"],
+            media_type=video_record["content_type"],
+            filename=video_record["source_filename"],
+        )
+    except Exception:
+        logger.exception("download_video failed subject=%s video_id=%s", auth.subject, video_id)
+        raise
 
 
 @router.get(

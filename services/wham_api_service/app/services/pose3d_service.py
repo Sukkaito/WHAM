@@ -4,15 +4,15 @@ from pathlib import Path
 from fastapi import HTTPException, status
 
 from app.core.settings import settings
-from app.models.schemas import JobStatus, PoseJobAcceptedResponse, PoseJobSubmitRequest, TransformType
+from app.models.schemas import AuthPayload, JobStatus, PoseJobAcceptedResponse, PoseJobSubmitRequest, TransformType
 from app.services.docker_executor import build_pose3d_pipeline_cmd, execute_docker_detached
 from app.services.job_service import register_job_submission, start_job_monitor, update_job_completion
 from app.services.video_service import get_video
 
 
-def submit_pose3d(payload: PoseJobSubmitRequest) -> PoseJobAcceptedResponse:
+def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAcceptedResponse:
     """Submit a pose3d job via detached cascading 2D->3D extraction pipeline."""
-    src = get_video(video_id=payload.source_video_id, auth=payload.auth)
+    src = get_video(video_id=payload.source_video_id, auth=auth)
 
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     job_name = f"pose3d-{job_id}"
@@ -51,8 +51,8 @@ def submit_pose3d(payload: PoseJobSubmitRequest) -> PoseJobAcceptedResponse:
         "save_pkl": save_pkl,
         "run_smplify": run_smplify,
         "calib": calib,
-        "auth_subject": payload.auth.subject,
-        "auth_token": payload.auth.token,
+        "auth_subject": auth.subject,
+        "auth_api_key": auth.api_key,
     }
 
     register_job_submission(
