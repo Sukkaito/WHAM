@@ -23,6 +23,13 @@ import joblib
 import numpy as np
 import torch
 
+try:
+    from ._bootstrap import ensure_repo_root_on_path
+except ImportError:
+    from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 # WHAM imports
 from configs.config import get_cfg_defaults
 from lib.models.preproc.detector import DetectionModel

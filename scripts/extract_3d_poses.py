@@ -19,6 +19,13 @@ import os.path as osp
 from collections import defaultdict
 from pathlib import Path
 
+try:
+    from ._bootstrap import ensure_repo_root_on_path
+except ImportError:
+    from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 import cv2
 import joblib
 import numpy as np
