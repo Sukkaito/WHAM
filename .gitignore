@@ -33,6 +33,7 @@ wheels/
 .env.local
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
@@ -54,3 +55,7 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+tests/
+
+videos/

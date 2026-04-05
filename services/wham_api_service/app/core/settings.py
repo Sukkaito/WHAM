@@ -68,6 +68,11 @@ class Settings:
             "yes",
             "on",
         }
+        self.log_dir = Path(os.getenv("WHAM_LOG_DIR", str(self.wham_data_dir / "logs")))
+        self.log_file_name = os.getenv("WHAM_LOG_FILE_NAME", "wham_api_service.log")
+        self.log_file_path = self.log_dir / self.log_file_name
+        self.log_max_bytes = int(os.getenv("WHAM_LOG_MAX_BYTES", "10485760"))
+        self.log_backup_count = int(os.getenv("WHAM_LOG_BACKUP_COUNT", "5"))
         self.allowed_video_extensions = {
             ".mp4",
             ".mov",
@@ -87,6 +92,7 @@ class Settings:
         print(f"  Auth subject header: {self.auth_subject_header}")
         print(f"  Auth api-key header: {self.auth_api_key_header}")
         print(f"  Docker cleanup enabled: {self.docker_cleanup_enabled}")
+        print(f"  Log file:     {self.log_file_path}")
         print(f"  Database URL: {self.database_url or '<unset>'}")
 
 

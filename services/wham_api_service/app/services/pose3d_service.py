@@ -39,7 +39,7 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         "gpu_id": gpu_id,
         "video": f"/videos/{src['stored_filename']}",
         "source_filename": src["stored_filename"],
-        "source_video_path": src["storage_path"],
+        "source_video_path": str(src["storage_path"]),
         "output_pth": output_pth,
         "output_dir": output_dir,
         "result_filename": result_name,

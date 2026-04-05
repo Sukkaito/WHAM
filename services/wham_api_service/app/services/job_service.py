@@ -20,8 +20,20 @@ from app.services.docker_executor import (
 from app.services.video_service import read_idx, write_idx
 
 
+_ERROR_SUMMARY_MAX_LEN = 1024
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _truncate_error_summary(error_summary: str | None) -> str | None:
+    if error_summary is None:
+        return None
+    value = error_summary.strip()
+    if len(value) <= _ERROR_SUMMARY_MAX_LEN:
+        return value
+    return value[: _ERROR_SUMMARY_MAX_LEN - 3] + "..."
 
 
 def _database_ready() -> bool:
@@ -193,6 +205,7 @@ def update_job_completion(
     error_summary: str | None = None,
 ) -> None:
     database_ready = _database_ready()
+    normalized_error_summary = _truncate_error_summary(error_summary)
 
     if database_ready:
         with session_scope() as session:
@@ -205,17 +218,17 @@ def update_job_completion(
 
             job.status = _to_db_status(status_value)
             job.exit_code = exit_code
-            job.error_summary = error_summary
+            job.error_summary = normalized_error_summary
             job.updated_at = _now()
 
             runtime_params = job.runtime_params or {}
             if isinstance(runtime_params, dict):
                 runtime_params = dict(runtime_params)
             runtime_params["exit_code"] = exit_code
-            runtime_params["error_summary"] = error_summary
+            runtime_params["error_summary"] = normalized_error_summary
             job.runtime_params = runtime_params
 
-    _sync_json_status(job_id, status_value.value, exit_code=exit_code, error_summary=error_summary)
+    _sync_json_status(job_id, status_value.value, exit_code=exit_code, error_summary=normalized_error_summary)
 
 
 def _sync_json_status(
@@ -225,6 +238,7 @@ def _sync_json_status(
     exit_code: int | None = None,
     error_summary: str | None = None,
 ) -> None:
+    error_summary = _truncate_error_summary(error_summary)
     idx = read_idx()
     jobs = idx.setdefault("jobs", {})
     assoc = idx.setdefault("associations", {})

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Shared Docker execution utilities for WHAM pose extraction and inference.
 
@@ -49,6 +51,8 @@ def _get_docker_base_args(
         f"CUDA_VISIBLE_DEVICES={gpu_id}",
         "-e",
         "PYTHONUNBUFFERED=1",
+        "-e",
+        "CUDA_LAUNCH_BLOCKING=1",
         "-v",
         f"{settings.wham_data_dir / 'dataset'}:/code/dataset",
         "-v",
