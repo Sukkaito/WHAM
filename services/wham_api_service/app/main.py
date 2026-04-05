@@ -1,9 +1,11 @@
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 
 from app.api.router import api_router
 from app.core.auth import AuthMiddleware
 from app.core.logging import setup_logging
 from app.core.token_registry import bootstrap_api_keys
+from app.core.settings import settings
 from app.db.session import init_db
 
 
@@ -16,6 +18,7 @@ def create_app() -> FastAPI:
             "Phase 1 scaffold for upload/download, pose2d, pose3d, "
             "job status, and lineage association endpoints."
         ),
+        swagger_ui_parameters={"persistAuthorization": True},
     )
     app.add_middleware(AuthMiddleware)
 
@@ -25,6 +28,44 @@ def create_app() -> FastAPI:
         bootstrap_api_keys()
 
     app.include_router(api_router)
+
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = openapi_schema.setdefault("components", {})
+        security_schemes = components.setdefault("securitySchemes", {})
+        security_schemes["WHAMSubjectHeader"] = {
+            "type": "apiKey",
+            "in": "header",
+            "name": settings.auth_subject_header,
+            "description": "Custom subject header required by the WHAM API.",
+        }
+        security_schemes["WHAMApiKeyHeader"] = {
+            "type": "apiKey",
+            "in": "header",
+            "name": settings.auth_api_key_header,
+            "description": "Custom API key header required by the WHAM API.",
+        }
+        security_requirement = {
+            "WHAMSubjectHeader": [],
+            "WHAMApiKeyHeader": [],
+        }
+        for path_item in openapi_schema.get("paths", {}).values():
+            for operation in path_item.values():
+                if isinstance(operation, dict):
+                    operation.setdefault("security", []).insert(0, security_requirement)
+
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
     return app
 
 
