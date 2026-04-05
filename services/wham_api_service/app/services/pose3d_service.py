@@ -1,12 +1,11 @@
 import uuid
 from pathlib import Path
 
-from fastapi import HTTPException, status
-
 from app.core.settings import settings
 from app.models.schemas import AuthPayload, JobStatus, PoseJobAcceptedResponse, PoseJobSubmitRequest, TransformType
-from app.services.docker_executor import build_pose3d_pipeline_cmd, execute_docker_detached
-from app.services.job_service import register_job_submission, start_job_monitor, update_job_completion
+from app.services.docker_executor import build_pose3d_pipeline_cmd
+from app.services.job_queue import enqueue_job
+from app.services.job_service import register_job_submission
 from app.services.video_service import get_video
 
 
@@ -55,6 +54,20 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         "auth_api_key": auth.api_key,
     }
 
+    cmd = build_pose3d_pipeline_cmd(
+        source_name=src["stored_filename"],
+        job_id=job_id,
+        output_dir=output_dir,
+        gpu_id=gpu_id,
+        result_name=result_name,
+        estimate_local_only=estimate_local_only,
+        visualize=visualize,
+        save_pkl=save_pkl,
+        run_smplify=run_smplify,
+        calib=calib,
+    )
+    runtime_params["docker_cmd"] = cmd
+
     register_job_submission(
         job_id=job_id,
         job_name=job_name,
@@ -68,30 +81,7 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         runtime_params=runtime_params,
     )
 
-    cmd = build_pose3d_pipeline_cmd(
-        source_name=src["stored_filename"],
-        job_id=job_id,
-        output_dir=output_dir,
-        gpu_id=gpu_id,
-        result_name=result_name,
-        estimate_local_only=estimate_local_only,
-        visualize=visualize,
-        save_pkl=save_pkl,
-        run_smplify=run_smplify,
-        calib=calib,
-    )
-
-    result = execute_docker_detached(cmd, cwd=settings.repo_dir)
-    if not result.success:
-        msg = (result.stderr or result.stdout or "pose3d docker launch failed").strip()
-        update_job_completion(
-            job_id=job_id,
-            status_value=JobStatus.failed,
-            error_summary=msg,
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
-
-    start_job_monitor(job_id)
+    enqueue_job(job_id)
 
     return PoseJobAcceptedResponse(
         job_id=job_id,
@@ -99,5 +89,5 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         transform_type=TransformType.pose3d,
         source_video_id=payload.source_video_id,
         result_video_id=result_id,
-        status=JobStatus.running,
+        status=JobStatus.queued,
     )

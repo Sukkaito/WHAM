@@ -4,9 +4,12 @@ from fastapi.openapi.utils import get_openapi
 from app.api.router import api_router
 from app.core.auth import AuthMiddleware
 from app.core.logging import setup_logging
+from app.core.settings import settings
 from app.core.token_registry import bootstrap_api_keys
 from app.core.settings import settings
 from app.db.session import init_db
+from app.services.job_queue import start_job_worker
+from app.services.job_requeue import requeue_unfinished_jobs
 
 
 def create_app() -> FastAPI:
@@ -26,6 +29,8 @@ def create_app() -> FastAPI:
     async def _startup() -> None:
         init_db()
         bootstrap_api_keys()
+        start_job_worker(worker_count=settings.job_worker_count)
+        requeue_unfinished_jobs()
 
     app.include_router(api_router)
 

@@ -26,6 +26,7 @@ class Settings:
         self.video_index_file = self.videos_dir / ".video_index.json"
         self.docker_image = os.getenv("WHAM_DOCKER_IMAGE", "wham-local")
         self.default_gpu_id = os.getenv("WHAM_GPU_ID", "0")
+        self.job_worker_count = int(os.getenv("WHAM_JOB_WORKER_COUNT", "1"))
         self.auth_subject_header = os.getenv("WHAM_AUTH_SUBJECT_HEADER", "X-WHAM-Subject")
         self.auth_api_key_header = os.getenv("WHAM_AUTH_API_KEY_HEADER", "X-WHAM-Api-Key")
         self.bootstrap_api_keys = os.getenv("WHAM_BOOTSTRAP_API_KEYS", "")
@@ -89,6 +90,7 @@ class Settings:
         print(f"  Repo dir:     {self.repo_dir}")
         print(f"  Docker image: {self.docker_image}")
         print(f"  GPU ID:       {self.default_gpu_id}")
+        print(f"  Job workers:  {self.job_worker_count}")
         print(f"  Auth subject header: {self.auth_subject_header}")
         print(f"  Auth api-key header: {self.auth_api_key_header}")
         print(f"  Docker cleanup enabled: {self.docker_cleanup_enabled}")

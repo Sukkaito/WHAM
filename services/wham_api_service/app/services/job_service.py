@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,10 +11,8 @@ from app.db.session import get_engine, session_scope
 from app.models.schemas import JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
 from app.services.docker_executor import (
-    execute_docker_blocking,
     inspect_container,
     remove_container,
-    wait_for_container,
 )
 from app.services.video_service import read_idx, write_idx
 
@@ -172,7 +169,7 @@ def register_job_submission(
                     transform_type=DbTransformType(transform_type.value),
                     source_video_id=source_video_id,
                     result_video_id=result_video_id,
-                    status=DbJobStatus.running,
+                    status=DbJobStatus.queued,
                     container_name=runtime_params.get("container_name"),
                     exit_code=None,
                     error_summary=None,
@@ -187,7 +184,7 @@ def register_job_submission(
         source_video_id=source_video_id,
         result_video_id=result_video_id,
         transform_type=transform_type,
-        status_value=ApiJobStatus.running.value,
+        status_value=ApiJobStatus.queued.value,
         result_storage_path=result_storage_path,
         result_filename=result_filename,
         source_filename=runtime_params.get("source_filename", result_filename),
@@ -195,6 +192,27 @@ def register_job_submission(
         slam_results_path=slam_results_path,
         runtime_params=runtime_params,
     )
+
+
+def mark_job_running(job_id: str) -> None:
+    database_ready = _database_ready()
+
+    if database_ready:
+        with session_scope() as session:
+            job = session.get(JobRecord, job_id)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job not found for job_id={job_id}",
+                )
+
+            if job.status == DbJobStatus.succeeded or job.status == DbJobStatus.failed:
+                return
+
+            job.status = DbJobStatus.running
+            job.updated_at = _now()
+
+    _sync_json_status(job_id, ApiJobStatus.running.value)
 
 
 def update_job_completion(
@@ -427,72 +445,3 @@ def get_job_status(job_id: str) -> JobStatusResponse:
     return _job_response_from_json(job_row)
 
 
-def start_job_monitor(job_id: str) -> None:
-    def _monitor() -> None:
-        try:
-            database_ready = _database_ready()
-            container_name = None
-            if database_ready:
-                with session_scope() as session:
-                    job = session.get(JobRecord, job_id)
-                    if job is None:
-                        return
-                    container_name = job.container_name
-                    if not container_name and isinstance(job.runtime_params, dict):
-                        container_name = job.runtime_params.get("container_name")
-            else:
-                idx = read_idx()
-                job_row = idx.get("jobs", {}).get(job_id)
-                if job_row is None:
-                    return
-                container_name = job_row.get("container_name")
-                if not container_name and isinstance(job_row.get("runtime_params"), dict):
-                    container_name = job_row["runtime_params"].get("container_name")
-
-            if not container_name:
-                return
-
-            wait_result = wait_for_container(container_name)
-            if not wait_result.success:
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.failed,
-                    error_summary=(wait_result.stderr or wait_result.stdout or "Docker wait failed").strip(),
-                )
-                return
-
-            try:
-                exit_code = int(wait_result.stdout.strip().splitlines()[-1])
-            except Exception:
-                exit_code = None
-
-            if exit_code == 0:
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.succeeded,
-                    exit_code=exit_code,
-                )
-                _cleanup_container(container_name)
-                return
-
-            logs_result = execute_docker_blocking(["docker", "logs", "--tail", "200", container_name], cwd=settings.repo_dir)
-            error_summary = (logs_result.stderr or logs_result.stdout or "Docker container failed").strip()
-            update_job_completion(
-                job_id=job_id,
-                status_value=ApiJobStatus.failed,
-                exit_code=exit_code,
-                error_summary=error_summary,
-            )
-            _cleanup_container(container_name)
-        except Exception as exc:  # pragma: no cover - defensive background monitor
-            try:
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.failed,
-                    error_summary=str(exc),
-                )
-            except Exception:
-                return
-
-    thread = threading.Thread(target=_monitor, name=f"wham-job-monitor-{job_id}", daemon=True)
-    thread.start()
