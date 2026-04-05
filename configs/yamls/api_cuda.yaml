@@ -1,0 +1,7 @@
+EXP_NAME: 'api'
+DEVICE: 'cuda'
+MODEL_CONFIG: 'configs/yamls/model_base.yaml'
+FLIP_EVAL: True
+
+MODEL:
+  BACKBONE: 'vit'

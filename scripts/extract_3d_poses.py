@@ -70,6 +70,7 @@ def main():
     args = ap.parse_args()
 
     cfg = get_cfg_defaults()
+    cfg.merge_from_file('configs/yamls/api_cuda.yaml')
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
