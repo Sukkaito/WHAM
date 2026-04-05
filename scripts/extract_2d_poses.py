@@ -26,6 +26,7 @@ import torch
 # WHAM imports
 from configs.config import get_cfg_defaults
 from lib.models.preproc.detector import DetectionModel
+from lib.models.preproc.extractor import FeatureExtractor
 from scripts.pose2d_artifact_utils import pick_best_track, render_overlay_video
 
 try:
@@ -88,7 +89,8 @@ def main():
     )
     args = ap.parse_args()
 
-    _ = get_cfg_defaults()
+    cfg = get_cfg_defaults()
+    cfg.merge_from_file("configs/yamls/demo.yaml")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,6 +125,7 @@ def main():
     print(f"[extract_2d_poses] Initializing DetectionModel...")
     with torch.no_grad():
         detector = DetectionModel(args.device)
+        extractor = FeatureExtractor(args.device.lower(), cfg.FLIP_EVAL)
         if run_global:
             slam = SLAMModel(args.video, str(output_dir), width, height, args.calib)
         else:
@@ -155,6 +158,10 @@ def main():
         else:
             slam_results = np.zeros((length, 7))
             slam_results[:, 3] = 1.0
+
+        # Extract image features and init states to match demo preprocessing outputs.
+        print(f"[extract_2d_poses] Extracting image features...")
+        tracking_results = extractor.run(args.video, tracking_results)
 
     # Save tracking results
     out_path = osp.join(str(output_dir), "tracking_results.pth")
