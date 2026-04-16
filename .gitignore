@@ -1,5 +1,6 @@
 # Project-specific
 .github
+.agents
 checkpoints
 examples
 third-party
@@ -59,3 +60,4 @@ Thumbs.db
 tests/
 
 videos/
+skills-lock.json

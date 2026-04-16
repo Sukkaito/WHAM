@@ -3,7 +3,7 @@ from pathlib import Path
 
 from app.core.settings import settings
 from app.models.schemas import AuthPayload, JobStatus, PoseJobAcceptedResponse, PoseJobSubmitRequest, TransformType
-from app.services.docker_executor import build_pose2d_pipeline_cmd
+from app.services.pose_command_builder import build_pose2d_pipeline_spec
 from app.services.job_queue import enqueue_job
 from app.services.job_service import register_job_submission
 from app.services.video_service import get_video
@@ -21,7 +21,7 @@ def submit_pose2d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
     estimate_local_only = settings.pose2d_estimate_local_only
     visualize = settings.pose2d_visualize
     calib = None
-    container_name = f"wham-pose2d-{job_id}"
+    pod_name = f"wham-pose2d-{job_id}"
 
     stem = Path(src["stored_filename"]).stem
     output_pth = f"output/pose2d/{job_id}"
@@ -32,7 +32,9 @@ def submit_pose2d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
 
     runtime_params = {
         "job_name": job_name,
-        "container_name": container_name,
+        "container_name": pod_name,
+        "pod_name": pod_name,
+        "execution_backend": settings.execution_backend,
         "gpu_id": gpu_id,
         "video": f"/videos/{src['stored_filename']}",
         "source_filename": src["stored_filename"],
@@ -50,7 +52,7 @@ def submit_pose2d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         "auth_api_key": auth.api_key,
     }
 
-    cmd = build_pose2d_pipeline_cmd(
+    cmd_spec = build_pose2d_pipeline_spec(
         source_name=src["stored_filename"],
         job_id=job_id,
         result_name=result_name,
@@ -58,7 +60,8 @@ def submit_pose2d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         estimate_local_only=estimate_local_only,
         calib=calib,
     )
-    runtime_params["docker_cmd"] = cmd
+    runtime_params["docker_cmd"] = cmd_spec["docker_cmd"]
+    runtime_params["runpod_entrypoint"] = cmd_spec["runpod_entrypoint"]
 
     register_job_submission(
         job_id=job_id,

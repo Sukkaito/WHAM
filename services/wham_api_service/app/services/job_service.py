@@ -10,16 +10,11 @@ from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformTy
 from app.db.session import get_engine, session_scope
 from app.models.schemas import JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
-from app.services.docker_executor import (
-    inspect_container,
-    remove_container,
-)
-from app.services.video_service import read_idx, write_idx
+from .execution_strategy import get_execution_strategy
+from .video_service import read_idx, write_idx
 
 
 _ERROR_SUMMARY_MAX_LEN = 1024
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -53,11 +48,6 @@ def _to_api_status(status_value: DbJobStatus) -> ApiJobStatus:
     return ApiJobStatus(status_value.value)
 
 
-def _cleanup_container(container_name: str | None) -> None:
-    if not container_name or not settings.docker_cleanup_enabled:
-        return
-    remove_container(container_name)
-
 
 def _touch_json_index(
     *,
@@ -72,6 +62,9 @@ def _touch_json_index(
     tracking_results_path: str | None,
     slam_results_path: str | None,
     runtime_params: dict[str, Any],
+    pod_id: str | None = None,
+    pod_name: str | None = None,
+    execution_backend: str | None = None,
     error_summary: str | None = None,
     exit_code: int | None = None,
 ) -> None:
@@ -110,6 +103,9 @@ def _touch_json_index(
         "result_video_id": result_video_id,
         "status": status_value,
         "container_name": runtime_params.get("container_name"),
+        "pod_id": pod_id or runtime_params.get("pod_id"),
+        "pod_name": pod_name or runtime_params.get("pod_name"),
+        "execution_backend": execution_backend or runtime_params.get("execution_backend"),
         "created_at": runtime_params.get("created_at") or _now().isoformat(),
         "updated_at": _now().isoformat(),
         "tracking_results_path": tracking_results_path,
@@ -159,9 +155,13 @@ def register_job_submission(
     db_runtime_params.setdefault("result_storage_path", result_storage_path)
     db_runtime_params.setdefault("tracking_results_path", tracking_results_path)
     db_runtime_params.setdefault("slam_results_path", slam_results_path)
+    db_runtime_params.setdefault("execution_backend", runtime_params.get("execution_backend", settings.execution_backend))
 
     if database_ready:
         with session_scope() as session:
+            pod_id = runtime_params.get("pod_id")
+            pod_name = runtime_params.get("pod_name")
+            execution_backend = runtime_params.get("execution_backend") or settings.execution_backend
             session.add(
                 JobRecord(
                     job_id=job_id,
@@ -171,6 +171,9 @@ def register_job_submission(
                     result_video_id=result_video_id,
                     status=DbJobStatus.queued,
                     container_name=runtime_params.get("container_name"),
+                    pod_id=pod_id,
+                    pod_name=pod_name,
+                    execution_backend=execution_backend,
                     exit_code=None,
                     error_summary=None,
                     runtime_params=db_runtime_params,
@@ -191,7 +194,59 @@ def register_job_submission(
         tracking_results_path=tracking_results_path,
         slam_results_path=slam_results_path,
         runtime_params=runtime_params,
+        pod_id=runtime_params.get("pod_id"),
+        pod_name=runtime_params.get("pod_name"),
+        execution_backend=runtime_params.get("execution_backend"),
     )
+
+
+def update_job_runtime_metadata(job_id: str, updates: dict[str, Any]) -> None:
+    database_ready = _database_ready()
+    normalized_updates = dict(updates)
+
+    if database_ready:
+        with session_scope() as session:
+            job = session.get(JobRecord, job_id)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job not found for job_id={job_id}",
+                )
+
+            runtime_params = job.runtime_params or {}
+            if not isinstance(runtime_params, dict):
+                runtime_params = {}
+            runtime_params.update(normalized_updates)
+            job.runtime_params = runtime_params
+            if "container_name" in normalized_updates:
+                job.container_name = normalized_updates.get("container_name")
+            if "pod_id" in normalized_updates:
+                job.pod_id = normalized_updates.get("pod_id")
+            if "pod_name" in normalized_updates:
+                job.pod_name = normalized_updates.get("pod_name")
+            if "execution_backend" in normalized_updates:
+                job.execution_backend = normalized_updates.get("execution_backend")
+            job.updated_at = _now()
+
+    idx = read_idx()
+    jobs = idx.setdefault("jobs", {})
+    job_row = jobs.get(job_id)
+    if job_row is not None:
+        runtime_params = job_row.get("runtime_params") or {}
+        if not isinstance(runtime_params, dict):
+            runtime_params = {}
+        runtime_params.update(normalized_updates)
+        job_row["runtime_params"] = runtime_params
+        if "container_name" in normalized_updates:
+            job_row["container_name"] = normalized_updates.get("container_name")
+        if "pod_id" in normalized_updates:
+            job_row["pod_id"] = normalized_updates.get("pod_id")
+        if "pod_name" in normalized_updates:
+            job_row["pod_name"] = normalized_updates.get("pod_name")
+        if "execution_backend" in normalized_updates:
+            job_row["execution_backend"] = normalized_updates.get("execution_backend")
+        job_row["updated_at"] = _now().isoformat()
+        write_idx(idx)
 
 
 def mark_job_running(job_id: str) -> None:
@@ -300,6 +355,9 @@ def _job_to_response(job: JobRecord) -> JobStatusResponse:
         result_video_id=job.result_video_id,
         status=_to_api_status(job.status),
         container_name=job.container_name or runtime_params.get("container_name"),
+        pod_id=job.pod_id or runtime_params.get("pod_id"),
+        pod_name=job.pod_name or runtime_params.get("pod_name"),
+        execution_backend=job.execution_backend or runtime_params.get("execution_backend"),
         exit_code=job.exit_code,
         error_summary=job.error_summary,
         created_at=job.created_at,
@@ -321,6 +379,9 @@ def _job_response_from_json(job_row: dict[str, Any]) -> JobStatusResponse:
         result_video_id=job_row.get("result_video_id"),
         status=ApiJobStatus(status_value),
         container_name=job_row.get("container_name") or runtime_params.get("container_name"),
+        pod_id=job_row.get("pod_id") or runtime_params.get("pod_id"),
+        pod_name=job_row.get("pod_name") or runtime_params.get("pod_name"),
+        execution_backend=job_row.get("execution_backend") or runtime_params.get("execution_backend"),
         exit_code=job_row.get("exit_code"),
         error_summary=job_row.get("error_summary"),
         created_at=None,
@@ -328,45 +389,31 @@ def _job_response_from_json(job_row: dict[str, Any]) -> JobStatusResponse:
     )
 
 
-def _refresh_job_from_container(job: JobRecord) -> JobRecord:
-    container_name = job.container_name
-    if not container_name:
-        runtime_params = job.runtime_params or {}
-        if isinstance(runtime_params, dict):
-            container_name = runtime_params.get("container_name")
+def _refresh_job_from_execution(job: JobRecord) -> JobRecord:
+    runtime_params = job.runtime_params or {}
+    if not isinstance(runtime_params, dict):
+        runtime_params = {}
 
-    if not container_name:
+    execution_backend = (job.execution_backend or runtime_params.get("execution_backend") or settings.execution_backend).strip().lower()
+    strategy = get_execution_strategy(execution_backend)
+    identifier = job.pod_id or runtime_params.get("pod_id") or job.container_name or runtime_params.get("container_name")
+    if not identifier:
         return job
 
-    inspect_result = inspect_container(container_name)
-    if not inspect_result.success:
+    inspection = strategy.inspect(identifier, runtime_params)
+    if inspection.state == "running":
         return job
 
-    payload = inspect_result.stdout.strip().split()
-    if len(payload) < 2:
-        return job
-
-    container_state = payload[0].lower()
-    try:
-        exit_code = int(payload[1])
-    except ValueError:
-        exit_code = None
-
-    if container_state in {"running", "created", "paused"}:
-        return job
-
-    if exit_code == 0:
-        update_job_completion(job_id=job.job_id, status_value=ApiJobStatus.succeeded, exit_code=exit_code)
-        _cleanup_container(container_name)
+    if inspection.state == "succeeded":
+        update_job_completion(job_id=job.job_id, status_value=ApiJobStatus.succeeded, exit_code=inspection.exit_code)
     else:
-        error_summary = f"Docker container {container_name} exited with status {container_state}"
         update_job_completion(
             job_id=job.job_id,
             status_value=ApiJobStatus.failed,
-            exit_code=exit_code,
-            error_summary=error_summary,
+            exit_code=inspection.exit_code,
+            error_summary=inspection.error_summary,
         )
-        _cleanup_container(container_name)
+    strategy.cleanup(identifier)
 
     database_ready = _database_ready()
     if not database_ready:
@@ -392,7 +439,7 @@ def get_job_status(job_id: str) -> JobStatusResponse:
                 )
 
             if job.status == DbJobStatus.running:
-                refreshed = _refresh_job_from_container(job)
+                refreshed = _refresh_job_from_execution(job)
                 if refreshed is not job:
                     job = refreshed
 
@@ -407,40 +454,28 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         )
 
     if job_row.get("status") == ApiJobStatus.running.value:
-        container_name = job_row.get("container_name")
-        if not container_name and isinstance(job_row.get("runtime_params"), dict):
-            container_name = job_row["runtime_params"].get("container_name")
-        if container_name:
-            inspect_result = inspect_container(container_name)
-            if inspect_result.success:
-                payload = inspect_result.stdout.strip().split()
-                if len(payload) >= 2 and payload[0].lower() not in {"running", "created", "paused"}:
-                    try:
-                        exit_code = int(payload[1])
-                    except Exception:
-                        exit_code = None
-                    if exit_code == 0:
-                        update_job_completion(
-                            job_id=job_id,
-                            status_value=ApiJobStatus.succeeded,
-                            exit_code=exit_code,
-                        )
-                        _cleanup_container(container_name)
-                    else:
-                        update_job_completion(
-                            job_id=job_id,
-                            status_value=ApiJobStatus.failed,
-                            exit_code=exit_code,
-                            error_summary=f"Docker container {container_name} exited with status {payload[0].lower()}",
-                        )
-                        _cleanup_container(container_name)
-                    idx = read_idx()
-                    job_row = idx.get("jobs", {}).get(job_id)
-                    if job_row is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Job not found for job_id={job_id}",
-                        )
+        runtime_params = job_row.get("runtime_params") or {}
+        if not isinstance(runtime_params, dict):
+            runtime_params = {}
+        strategy = get_execution_strategy(job_row.get("execution_backend") or runtime_params.get("execution_backend") or settings.execution_backend)
+        identifier = job_row.get("pod_id") or runtime_params.get("pod_id") or job_row.get("container_name") or runtime_params.get("container_name")
+        if identifier:
+            inspection = strategy.inspect(identifier, runtime_params)
+            if inspection.state != "running":
+                update_job_completion(
+                    job_id=job_id,
+                    status_value=ApiJobStatus.succeeded if inspection.state == "succeeded" else ApiJobStatus.failed,
+                    exit_code=inspection.exit_code,
+                    error_summary=inspection.error_summary,
+                )
+                strategy.cleanup(identifier)
+                idx = read_idx()
+                job_row = idx.get("jobs", {}).get(job_id)
+                if job_row is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Job not found for job_id={job_id}",
+                    )
 
     return _job_response_from_json(job_row)
 

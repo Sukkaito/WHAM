@@ -4,10 +4,11 @@ import queue
 import threading
 from typing import Any
 
+from app.core.logging import get_logger, log_event
 from app.core.settings import settings
 from app.models.schemas import JobStatus as ApiJobStatus
-from app.services.docker_executor import execute_docker_blocking, execute_docker_detached, inspect_container, wait_for_container
-from app.services.job_service import mark_job_running, update_job_completion
+from .execution_strategy import get_execution_strategy
+from .job_service import mark_job_running, update_job_completion, update_job_runtime_metadata
 
 
 _job_queue: queue.Queue[str] = queue.Queue()
@@ -15,13 +16,14 @@ _enqueued_job_ids: set[str] = set()
 _queue_lock = threading.Lock()
 _worker_threads: list[threading.Thread] = []
 _worker_started = False
+_logger = get_logger(__name__)
 
 
 def _get_job_record_for_worker(job_id: str) -> dict[str, Any] | None:
     from app.db.models import JobRecord
     from app.db.session import session_scope
-    from app.services.job_service import _database_ready
-    from app.services.video_service import read_idx
+    from .job_service import _database_ready
+    from .video_service import read_idx
 
     database_ready = _database_ready()
 
@@ -39,6 +41,9 @@ def _get_job_record_for_worker(job_id: str) -> dict[str, Any] | None:
                 "job_id": job.job_id,
                 "status": job.status.value,
                 "container_name": job.container_name or runtime_params.get("container_name"),
+                "pod_id": getattr(job, "pod_id", None) or runtime_params.get("pod_id"),
+                "pod_name": getattr(job, "pod_name", None) or runtime_params.get("pod_name"),
+                "execution_backend": getattr(job, "execution_backend", None) or runtime_params.get("execution_backend"),
                 "runtime_params": runtime_params,
             }
 
@@ -53,140 +58,166 @@ def _get_job_record_for_worker(job_id: str) -> dict[str, Any] | None:
         "job_id": row.get("job_id", job_id),
         "status": row.get("status", ApiJobStatus.queued.value),
         "container_name": row.get("container_name") or runtime_params.get("container_name"),
+        "pod_id": row.get("pod_id") or runtime_params.get("pod_id"),
+        "pod_name": row.get("pod_name") or runtime_params.get("pod_name"),
+        "execution_backend": row.get("execution_backend") or runtime_params.get("execution_backend"),
         "runtime_params": runtime_params,
     }
 
 
-def _complete_job_from_container_state(job_id: str, container_name: str) -> None:
-    from app.services.job_service import _cleanup_container
-
-    wait_result = wait_for_container(container_name)
-    if not wait_result.success:
-        update_job_completion(
-            job_id=job_id,
-            status_value=ApiJobStatus.failed,
-            error_summary=(wait_result.stderr or wait_result.stdout or "Docker wait failed").strip(),
-        )
-        _cleanup_container(container_name)
-        return
-
-    try:
-        exit_code = int(wait_result.stdout.strip().splitlines()[-1])
-    except Exception:
-        exit_code = None
-
-    if exit_code == 0:
-        update_job_completion(
-            job_id=job_id,
-            status_value=ApiJobStatus.succeeded,
-            exit_code=exit_code,
-        )
-        _cleanup_container(container_name)
-        return
-
-    logs_result = execute_docker_blocking(["docker", "logs", "--tail", "200", container_name], cwd=settings.repo_dir)
-    error_summary = (logs_result.stderr or logs_result.stdout or "Docker container failed").strip()
-    update_job_completion(
-        job_id=job_id,
-        status_value=ApiJobStatus.failed,
-        exit_code=exit_code,
-        error_summary=error_summary,
-    )
-    _cleanup_container(container_name)
-
-
 def _run_job_worker_cycle(job_id: str) -> None:
-    from app.services.job_service import _cleanup_container
-
     row = _get_job_record_for_worker(job_id)
     if row is None:
         return
 
     status_value = row["status"]
     runtime_params = row["runtime_params"]
-    container_name = row.get("container_name")
+    backend = (row.get("execution_backend") or runtime_params.get("execution_backend") or settings.execution_backend).strip().lower()
+    strategy = get_execution_strategy(backend)
+    log_event(
+        _logger,
+        "job_worker_cycle_start",
+        job_id=job_id,
+        backend=backend,
+        status=status_value,
+    )
 
     if status_value in {ApiJobStatus.succeeded.value, ApiJobStatus.failed.value}:
         return
 
     if status_value == ApiJobStatus.running.value:
-        if not container_name:
+        identifier = row.get("pod_id") if backend == "runpod" else row.get("container_name")
+        if not identifier:
+            log_event(
+                _logger,
+                "job_running_missing_identifier",
+                job_id=job_id,
+                backend=backend,
+            )
             update_job_completion(
                 job_id=job_id,
                 status_value=ApiJobStatus.failed,
-                error_summary="Running job has no container name",
+                error_summary=f"Running job has no {'pod_id' if backend == 'runpod' else 'container name'}",
             )
             return
 
-        inspect_result = inspect_container(container_name)
-        if not inspect_result.success:
-            update_job_completion(
-                job_id=job_id,
-                status_value=ApiJobStatus.failed,
-                error_summary=(inspect_result.stderr or inspect_result.stdout or "Container not found").strip(),
-            )
-            _cleanup_container(container_name)
-            return
-
-        payload = inspect_result.stdout.strip().split()
-        if len(payload) >= 2 and payload[0].lower() not in {"running", "created", "paused"}:
-            try:
-                exit_code = int(payload[1])
-            except Exception:
-                exit_code = None
-
-            if exit_code == 0:
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.succeeded,
-                    exit_code=exit_code,
-                )
-            else:
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.failed,
-                    exit_code=exit_code,
-                    error_summary=f"Docker container {container_name} exited with status {payload[0].lower()}",
-                )
-            _cleanup_container(container_name)
-            return
-
-        _complete_job_from_container_state(job_id, container_name)
-        return
-
-    docker_cmd = runtime_params.get("docker_cmd") if isinstance(runtime_params, dict) else None
-    if not isinstance(docker_cmd, list) or not docker_cmd:
-        update_job_completion(
+        log_event(
+            _logger,
+            "job_inspect_start",
             job_id=job_id,
-            status_value=ApiJobStatus.failed,
-            error_summary="Missing docker command for queued job",
+            backend=backend,
+            identifier=identifier,
         )
+        inspection = strategy.inspect(identifier, runtime_params)
+        log_event(
+            _logger,
+            "job_inspect_result",
+            job_id=job_id,
+            backend=backend,
+            identifier=identifier,
+            state=inspection.state,
+            exit_code=inspection.exit_code,
+        )
+        if inspection.state == "running":
+            completion = strategy.wait_for_completion(job_id, identifier, runtime_params)
+            log_event(
+                _logger,
+                "job_wait_completion",
+                job_id=job_id,
+                backend=backend,
+                identifier=identifier,
+                status=completion.status_value.value,
+                exit_code=completion.exit_code,
+            )
+            update_job_completion(
+                job_id=job_id,
+                status_value=completion.status_value,
+                exit_code=completion.exit_code,
+                error_summary=completion.error_summary,
+            )
+        elif inspection.state == "succeeded":
+            update_job_completion(
+                job_id=job_id,
+                status_value=ApiJobStatus.succeeded,
+                exit_code=inspection.exit_code,
+            )
+        else:
+            update_job_completion(
+                job_id=job_id,
+                status_value=ApiJobStatus.failed,
+                exit_code=inspection.exit_code,
+                error_summary=inspection.error_summary,
+            )
+        strategy.cleanup(identifier)
         return
 
-    mark_job_running(job_id)
-    launch_result = execute_docker_detached(docker_cmd, cwd=settings.repo_dir)
+    log_event(
+        _logger,
+        "job_launch_start",
+        job_id=job_id,
+        backend=backend,
+    )
+    launch_result = strategy.launch(job_id, runtime_params)
     if not launch_result.success:
+        failure_message = (launch_result.stderr or launch_result.stdout or f"{strategy.backend_name} launch failed").strip()
+        log_event(
+            _logger,
+            "job_launch_failed",
+            job_id=job_id,
+            backend=backend,
+            returncode=launch_result.returncode,
+        )
         update_job_completion(
             job_id=job_id,
             status_value=ApiJobStatus.failed,
-            error_summary=(launch_result.stderr or launch_result.stdout or "Docker launch failed").strip(),
+            error_summary=failure_message,
             exit_code=launch_result.returncode,
         )
         return
 
-    resolved = _get_job_record_for_worker(job_id)
-    if resolved is None:
-        return
-    container_name = resolved.get("container_name") or runtime_params.get("container_name")
-    if not container_name:
+    if launch_result.metadata_updates:
+        update_job_runtime_metadata(job_id, launch_result.metadata_updates)
+
+    log_event(
+        _logger,
+        "job_launch_succeeded",
+        job_id=job_id,
+        backend=backend,
+        identifier=launch_result.identifier,
+    )
+    mark_job_running(job_id)
+    identifier = launch_result.identifier or row.get("pod_id") or row.get("container_name")
+    if not identifier:
+        log_event(
+            _logger,
+            "job_launch_missing_identifier",
+            job_id=job_id,
+            backend=backend,
+        )
         update_job_completion(
             job_id=job_id,
             status_value=ApiJobStatus.failed,
-            error_summary="Queued job launched without container name",
+            error_summary=f"{strategy.backend_name} launch completed without identifier",
         )
         return
 
-    _complete_job_from_container_state(job_id, container_name)
+    completion = strategy.wait_for_completion(job_id, identifier, runtime_params)
+    log_event(
+        _logger,
+        "job_completed",
+        job_id=job_id,
+        backend=backend,
+        identifier=identifier,
+        status=completion.status_value.value,
+        exit_code=completion.exit_code,
+    )
+    update_job_completion(
+        job_id=job_id,
+        status_value=completion.status_value,
+        exit_code=completion.exit_code,
+        error_summary=completion.error_summary,
+    )
+    strategy.cleanup(identifier)
 
 
 def enqueue_job(job_id: str) -> None:
@@ -194,7 +225,8 @@ def enqueue_job(job_id: str) -> None:
         if job_id in _enqueued_job_ids:
             return
         _enqueued_job_ids.add(job_id)
-        _job_queue.put(job_id)
+    log_event(_logger, "job_enqueued", job_id=job_id)
+    _job_queue.put(job_id)
 
 
 def start_job_worker(worker_count: int = 1) -> None:

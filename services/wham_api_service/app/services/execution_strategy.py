@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import time
+from abc import ABC, abstractmethod
+from typing import Any, NamedTuple
+
+from app.core.settings import settings
+from app.models.schemas import JobStatus as ApiJobStatus
+from .docker_executor import (
+    execute_docker_detached,
+    execute_docker_blocking,
+    inspect_container,
+    remove_container,
+    wait_for_container,
+)
+from .runpod_executor import create_runpod_pod, delete_runpod_pod, fetch_runpod_pod_logs, get_runpod_pod_status
+
+
+class ExecutionLaunchResult(NamedTuple):
+    success: bool
+    identifier: str | None
+    stdout: str
+    stderr: str
+    returncode: int
+    metadata_updates: dict[str, Any]
+
+
+class ExecutionInspectionResult(NamedTuple):
+    state: str
+    exit_code: int | None
+    error_summary: str | None
+    stdout: str
+    stderr: str
+
+
+class ExecutionCompletionResult(NamedTuple):
+    status_value: ApiJobStatus
+    exit_code: int | None
+    error_summary: str | None
+
+
+class ExecutionStrategy(ABC):
+    backend_name: str
+
+    @abstractmethod
+    def launch(self, job_id: str, runtime_params: dict[str, Any]) -> ExecutionLaunchResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def inspect(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def wait_for_completion(self, job_id: str, identifier: str, runtime_params: dict[str, Any]) -> ExecutionCompletionResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def cleanup(self, identifier: str | None) -> None:
+        raise NotImplementedError
+
+
+def _normalize_runpod_state(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in ("running", "queued", "pending", "starting")):
+        return "running"
+    if any(token in lowered for token in ("succeeded", "completed", "complete", "finished", "exit code 0")):
+        return "succeeded"
+    if any(token in lowered for token in ("failed", "error", "terminated", "exit code 1")):
+        return "failed"
+    if "not found" in lowered or "missing" in lowered:
+        return "missing"
+    return "unknown"
+
+
+def _normalize_docker_state(text: str) -> str:
+    payload = text.strip().split()
+    if len(payload) >= 2 and payload[0].lower() not in {"running", "created", "paused"}:
+        try:
+            exit_code = int(payload[1])
+        except Exception:
+            exit_code = None
+        if exit_code == 0:
+            return "succeeded"
+        return "failed"
+    if payload and payload[0].lower() in {"running", "created", "paused"}:
+        return "running"
+    return "unknown"
+
+
+class DockerExecutionStrategy(ExecutionStrategy):
+    backend_name = "docker"
+
+    def launch(self, job_id: str, runtime_params: dict[str, Any]) -> ExecutionLaunchResult:
+        docker_cmd = runtime_params.get("docker_cmd") if isinstance(runtime_params, dict) else None
+        if not isinstance(docker_cmd, list) or not docker_cmd:
+            return ExecutionLaunchResult(False, None, "", "Missing docker command for queued job", 1, {})
+
+        result = execute_docker_detached(docker_cmd, cwd=settings.repo_dir)
+        identifier = runtime_params.get("container_name")
+        metadata_updates = {"execution_backend": self.backend_name}
+        if identifier:
+            metadata_updates["container_name"] = identifier
+        return ExecutionLaunchResult(
+            success=result.success,
+            identifier=identifier,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            returncode=result.returncode,
+            metadata_updates=metadata_updates,
+        )
+
+    def inspect(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        inspect_result = inspect_container(identifier)
+        if not inspect_result.success:
+            return ExecutionInspectionResult(
+                state="missing",
+                exit_code=None,
+                error_summary=(inspect_result.stderr or inspect_result.stdout or "Container not found").strip(),
+                stdout=inspect_result.stdout,
+                stderr=inspect_result.stderr,
+            )
+
+        payload = inspect_result.stdout.strip().split()
+        if len(payload) >= 2 and payload[0].lower() not in {"running", "created", "paused"}:
+            try:
+                exit_code = int(payload[1])
+            except Exception:
+                exit_code = None
+            state = "succeeded" if exit_code == 0 else "failed"
+            error_summary = None if state == "succeeded" else f"Docker container {identifier} exited with status {payload[0].lower()}"
+            return ExecutionInspectionResult(state=state, exit_code=exit_code, error_summary=error_summary, stdout=inspect_result.stdout, stderr=inspect_result.stderr)
+
+        return ExecutionInspectionResult(state="running", exit_code=None, error_summary=None, stdout=inspect_result.stdout, stderr=inspect_result.stderr)
+
+    def wait_for_completion(self, job_id: str, identifier: str, runtime_params: dict[str, Any]) -> ExecutionCompletionResult:
+        wait_result = wait_for_container(identifier)
+        if not wait_result.success:
+            return ExecutionCompletionResult(
+                status_value=ApiJobStatus.failed,
+                exit_code=None,
+                error_summary=(wait_result.stderr or wait_result.stdout or "Docker wait failed").strip(),
+            )
+
+        try:
+            exit_code = int(wait_result.stdout.strip().splitlines()[-1])
+        except Exception:
+            exit_code = None
+
+        if exit_code == 0:
+            return ExecutionCompletionResult(status_value=ApiJobStatus.succeeded, exit_code=exit_code, error_summary=None)
+
+        logs_result = execute_docker_blocking(["docker", "logs", "--tail", "200", identifier], cwd=settings.repo_dir)
+        error_summary = (logs_result.stderr or logs_result.stdout or "Docker container failed").strip()
+        return ExecutionCompletionResult(status_value=ApiJobStatus.failed, exit_code=exit_code, error_summary=error_summary)
+
+    def cleanup(self, identifier: str | None) -> None:
+        if not identifier or not settings.docker_cleanup_enabled:
+            return
+        remove_container(identifier)
+
+
+class RunpodExecutionStrategy(ExecutionStrategy):
+    backend_name = "runpod"
+
+    def launch(self, job_id: str, runtime_params: dict[str, Any]) -> ExecutionLaunchResult:
+        runpod_entrypoint = runtime_params.get("runpod_entrypoint") if isinstance(runtime_params, dict) else None
+        if not isinstance(runpod_entrypoint, list) or not runpod_entrypoint:
+            return ExecutionLaunchResult(False, None, "", "Missing runpod entrypoint for queued job", 1, {})
+
+        pod_name = runtime_params.get("pod_name") or runtime_params.get("container_name") or f"wham-{job_id}"
+        pod_env = {
+            "WHAM_JOB_ID": job_id,
+            "WHAM_EXECUTION_BACKEND": self.backend_name,
+            "WHAM_OUTPUT_DIR": runtime_params.get("output_dir", ""),
+            "WHAM_SOURCE_FILENAME": runtime_params.get("source_filename", ""),
+        }
+        result = create_runpod_pod(
+            pod_name=pod_name,
+            image=settings.runpod_image,
+            gpu_id=str(runtime_params.get("gpu_id") or settings.default_gpu_id),
+            entrypoint_cmd=runpod_entrypoint,
+            template_id=settings.runpod_template_id or None,
+            network_volume_id=settings.runpod_network_volume_id or None,
+            volume_mount_path=settings.runpod_volume_mount_path or None,
+            env={key: value for key, value in pod_env.items() if value},
+            cwd=settings.repo_dir,
+        )
+        metadata_updates = {
+            "pod_id": result.pod_id,
+            "pod_name": pod_name,
+            "container_name": pod_name,
+            "execution_backend": self.backend_name,
+        }
+        return ExecutionLaunchResult(
+            success=result.success,
+            identifier=result.pod_id,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            returncode=result.returncode,
+            metadata_updates=metadata_updates,
+        )
+
+    def inspect(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        status_result = get_runpod_pod_status(identifier, cwd=settings.repo_dir)
+        status_text = f"{status_result.stdout}\n{status_result.stderr}".strip()
+        normalized_state = _normalize_runpod_state(status_text)
+        if normalized_state == "running" or normalized_state == "unknown":
+            return ExecutionInspectionResult(state="running", exit_code=None, error_summary=None, stdout=status_result.stdout, stderr=status_result.stderr)
+        if normalized_state == "succeeded":
+            return ExecutionInspectionResult(state="succeeded", exit_code=0, error_summary=None, stdout=status_result.stdout, stderr=status_result.stderr)
+        if normalized_state == "missing":
+            return ExecutionInspectionResult(
+                state="missing",
+                exit_code=None,
+                error_summary=(status_result.stderr or status_result.stdout or f"Runpod pod {identifier} not found").strip(),
+                stdout=status_result.stdout,
+                stderr=status_result.stderr,
+            )
+        return ExecutionInspectionResult(
+            state="failed",
+            exit_code=status_result.returncode,
+            error_summary=(status_result.stderr or status_result.stdout or f"Runpod pod {identifier} failed").strip(),
+            stdout=status_result.stdout,
+            stderr=status_result.stderr,
+        )
+
+    def wait_for_completion(self, job_id: str, identifier: str, runtime_params: dict[str, Any]) -> ExecutionCompletionResult:
+        deadline = time.monotonic() + settings.runpod_job_timeout_seconds
+        last_status_text = ""
+
+        while time.monotonic() < deadline:
+            inspection = self.inspect(identifier, runtime_params)
+            status_text = f"{inspection.stdout}\n{inspection.stderr}".strip()
+            last_status_text = status_text or last_status_text
+
+            if inspection.state == "running" or inspection.state == "unknown":
+                time.sleep(max(settings.runpod_poll_interval_seconds, 1))
+                continue
+
+            if inspection.state == "succeeded":
+                return ExecutionCompletionResult(status_value=ApiJobStatus.succeeded, exit_code=0, error_summary=None)
+
+            logs_result = fetch_runpod_pod_logs(identifier, cwd=settings.repo_dir)
+            error_summary = logs_result.stderr or logs_result.stdout or last_status_text or f"Runpod pod {identifier} failed"
+            return ExecutionCompletionResult(
+                status_value=ApiJobStatus.failed,
+                exit_code=inspection.exit_code,
+                error_summary=error_summary,
+            )
+
+        return ExecutionCompletionResult(
+            status_value=ApiJobStatus.failed,
+            exit_code=None,
+            error_summary=f"Runpod pod {identifier} exceeded timeout while waiting for completion",
+        )
+
+    def cleanup(self, identifier: str | None) -> None:
+        if not identifier or not settings.runpod_delete_on_completion:
+            return
+        delete_runpod_pod(identifier)
+
+
+def get_execution_strategy(backend: str | None = None) -> ExecutionStrategy:
+    normalized = (backend or settings.execution_backend or "docker").strip().lower()
+    if normalized == "runpod":
+        return RunpodExecutionStrategy()
+    return DockerExecutionStrategy()

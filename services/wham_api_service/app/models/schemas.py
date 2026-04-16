@@ -49,6 +49,9 @@ class JobStatusResponse(BaseModel):
     result_video_id: Optional[str] = None
     status: JobStatus
     container_name: Optional[str] = None
+    pod_id: Optional[str] = None
+    pod_name: Optional[str] = None
+    execution_backend: Optional[str] = None
     exit_code: Optional[int] = None
     error_summary: Optional[str] = None
     created_at: Optional[datetime] = None

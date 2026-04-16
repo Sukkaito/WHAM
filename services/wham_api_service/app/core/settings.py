@@ -22,6 +22,7 @@ class Settings:
         self.wham_data_dir = Path(data_root)
         self.repo_dir = Path(repo_root)
         self.database_url = os.getenv("WHAM_DATABASE_URL")
+        self.execution_backend = os.getenv("WHAM_EXECUTION_BACKEND", "docker").strip().lower()
         self.videos_dir = self.wham_data_dir / "videos"
         self.video_index_file = self.videos_dir / ".video_index.json"
         self.docker_image = os.getenv("WHAM_DOCKER_IMAGE", "wham-local")
@@ -31,6 +32,19 @@ class Settings:
         self.auth_api_key_header = os.getenv("WHAM_AUTH_API_KEY_HEADER", "X-WHAM-Api-Key")
         self.bootstrap_api_keys = os.getenv("WHAM_BOOTSTRAP_API_KEYS", "")
         self.bootstrap_api_keys_file = os.getenv("WHAM_BOOTSTRAP_API_KEYS_FILE", "")
+        self.runpod_api_key = os.getenv("RUNPOD_API_KEY", "")
+        self.runpod_template_id = os.getenv("WHAM_RUNPOD_TEMPLATE_ID", "")
+        self.runpod_image = os.getenv("WHAM_RUNPOD_IMAGE", self.docker_image)
+        self.runpod_network_volume_id = os.getenv("WHAM_RUNPOD_NETWORK_VOLUME_ID", "")
+        self.runpod_volume_mount_path = os.getenv("WHAM_RUNPOD_VOLUME_MOUNT_PATH", "/code")
+        self.runpod_poll_interval_seconds = int(os.getenv("WHAM_RUNPOD_POLL_INTERVAL_SECONDS", "10"))
+        self.runpod_job_timeout_seconds = int(os.getenv("WHAM_RUNPOD_JOB_TIMEOUT_SECONDS", "7200"))
+        self.runpod_delete_on_completion = os.getenv("WHAM_RUNPOD_DELETE_ON_COMPLETION", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.pose2d_visualize = os.getenv("WHAM_POSE2D_VISUALIZE", "true").lower() in {
             "1",
             "true",
@@ -88,12 +102,16 @@ class Settings:
         print(f"[WHAM API Settings] Loaded from {env_source}")
         print(f"  Data dir:     {self.wham_data_dir}")
         print(f"  Repo dir:     {self.repo_dir}")
+        print(f"  Execution backend: {self.execution_backend}")
         print(f"  Docker image: {self.docker_image}")
         print(f"  GPU ID:       {self.default_gpu_id}")
         print(f"  Job workers:  {self.job_worker_count}")
         print(f"  Auth subject header: {self.auth_subject_header}")
         print(f"  Auth api-key header: {self.auth_api_key_header}")
         print(f"  Docker cleanup enabled: {self.docker_cleanup_enabled}")
+        print(f"  Runpod image: {self.runpod_image}")
+        print(f"  Runpod template: {self.runpod_template_id or '<unset>'}")
+        print(f"  Runpod volume: {self.runpod_network_volume_id or '<unset>'}")
         print(f"  Log file:     {self.log_file_path}")
         print(f"  Database URL: {self.database_url or '<unset>'}")
 
