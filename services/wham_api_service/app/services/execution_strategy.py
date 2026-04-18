@@ -168,6 +168,10 @@ class RunpodExecutionStrategy(ExecutionStrategy):
             return ExecutionLaunchResult(False, None, "", "Missing runpod entrypoint for queued job", 1, {})
 
         pod_name = runtime_params.get("pod_name") or runtime_params.get("container_name") or f"wham-{job_id}"
+        
+        # Use Runpod-specific GPU ID if configured, otherwise use default
+        gpu_id_for_pod = settings.runpod_gpu_id or settings.default_gpu_id
+        
         pod_env = {
             "WHAM_JOB_ID": job_id,
             "WHAM_EXECUTION_BACKEND": self.backend_name,
@@ -177,7 +181,7 @@ class RunpodExecutionStrategy(ExecutionStrategy):
         result = create_runpod_pod(
             pod_name=pod_name,
             image=settings.runpod_image,
-            gpu_id=str(runtime_params.get("gpu_id") or settings.default_gpu_id),
+            gpu_id=str(gpu_id_for_pod),
             entrypoint_cmd=runpod_entrypoint,
             template_id=settings.runpod_template_id or None,
             network_volume_id=settings.runpod_network_volume_id or None,

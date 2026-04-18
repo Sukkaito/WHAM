@@ -8,7 +8,8 @@ from app.services.docker_executor import _get_docker_base_args
 
 
 def to_runpod_entrypoint(shell_command: str) -> list[str]:
-    return ["bash", "-lc", shell_command]
+    return [shell_command]
+    # return ["whoami"]
 
 
 def _build_pose2d_shell_command(

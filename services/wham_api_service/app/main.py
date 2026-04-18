@@ -1,15 +1,34 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from app.api.router import api_router
 from app.core.auth import AuthMiddleware
-from app.core.logging import setup_logging
+from app.core.logging import get_logger, log_event, setup_logging
 from app.core.settings import settings
 from app.core.token_registry import bootstrap_api_keys
-from app.core.settings import settings
 from app.db.session import init_db
 from app.services.job_queue import start_job_worker
 from app.services.job_requeue import requeue_unfinished_jobs
+
+
+_logger = get_logger(__name__)
+
+
+def _configure_backend_auth() -> None:
+    backend = settings.execution_backend
+    if backend != "runpod":
+        return
+
+    api_key = settings.runpod_api_key.strip()
+    if not api_key:
+        raise RuntimeError(
+            "RUNPOD_API_KEY is required when WHAM_EXECUTION_BACKEND=runpod"
+        )
+
+    os.environ["RUNPOD_API_KEY"] = api_key
+    log_event(_logger, "startup_runpod_auth_configured", backend=backend)
 
 
 def create_app() -> FastAPI:
@@ -27,6 +46,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        _configure_backend_auth()
         init_db()
         bootstrap_api_keys()
         start_job_worker(worker_count=settings.job_worker_count)

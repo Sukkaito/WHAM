@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import re
 import shlex
@@ -59,6 +60,7 @@ def _run_runpodctl(args: Sequence[str], cwd: Path | str | None = None) -> Runpod
         text=True,
         cwd=str(cwd),
     )
+    logging.debug(proc.stderr)
     combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
     return RunpodExecResult(
         returncode=proc.returncode,
@@ -89,22 +91,37 @@ def build_runpod_pod_create_cmd(
     if template_id:
         cmd.extend(["--template-id", template_id])
     else:
-        cmd.extend(["--image", image, "--gpu-id", gpu_id])
+        cmd.extend(["--image", image])
+
+    if gpu_id:
+        cmd.extend(["--gpu-id", gpu_id])
 
     if network_volume_id:
         cmd.extend(["--network-volume-id", network_volume_id])
-    if volume_mount_path:
-        cmd.extend(["--volume-mount-path", volume_mount_path])
+    # if volume_mount_path:
+    #     cmd.extend(["--volume-mount-path", volume_mount_path])
+
+    # Build runtime environment for Runpod pod.
+    # Note: GPU allocation is handled by runpodctl --gpu-id flag, not by CUDA_VISIBLE_DEVICES.
+    # Only include custom env vars passed via the env parameter.
+    if len(entrypoint_cmd) == 1:
+        run_command = str(entrypoint_cmd[0])
+    elif len(entrypoint_cmd) >= 3 and entrypoint_cmd[0] == "bash" and entrypoint_cmd[1] == "-lc":
+        run_command = str(entrypoint_cmd[2])
+    else:
+        run_command = shlex.join(list(entrypoint_cmd))
 
     runtime_env = {
-        "CUDA_VISIBLE_DEVICES": gpu_id,
-        "WHAM_RUN_COMMAND": shlex.join(list(entrypoint_cmd)),
+        "WHAM_RUN_COMMAND": run_command,
     }
     if env:
         runtime_env.update(env)
 
-    for key, value in runtime_env.items():
-        cmd.extend(["--env", f"{key}={value}"])
+    # for key, value in runtime_env.items():
+    #     cmd.extend(["--env", f"{key}={value}"])
+        
+    env_payload = json.dumps(runtime_env)
+    cmd.extend(["--env", env_payload])
 
     return cmd
 
@@ -131,6 +148,7 @@ def create_runpod_pod(
         volume_mount_path=volume_mount_path,
         env=env,
     )
+    logging.debug(f"Executing runpodctl command: {cmd}")
     return _run_runpodctl(cmd[1:], cwd=cwd)
 
 

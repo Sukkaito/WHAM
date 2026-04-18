@@ -17,7 +17,11 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
     job_name = f"pose3d-{job_id}"
     result_id = f"vid_{uuid.uuid4().hex[:16]}"
     result_name = f"{result_id}.mp4"
-    gpu_id = settings.default_gpu_id
+    # Use backend-specific GPU ID based on execution backend
+    if settings.execution_backend == "runpod":
+        gpu_id = settings.runpod_gpu_id or settings.default_gpu_id
+    else:
+        gpu_id = settings.docker_gpu_id or settings.default_gpu_id
     estimate_local_only = settings.pose3d_estimate_local_only
     visualize = settings.pose3d_visualize
     save_pkl = settings.pose3d_save_pkl

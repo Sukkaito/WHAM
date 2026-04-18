@@ -29,6 +29,7 @@ def init_db() -> None:
     engine = get_engine()
     if engine is None:
         return
+    # Base.metadata.drop_all(bind=engine)  # Drop existing tables for a clean slate (use with caution!)
     Base.metadata.create_all(bind=engine)
 
 

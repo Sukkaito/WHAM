@@ -9,16 +9,17 @@ from app.core.settings import settings
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+_LOGGING_LEVEL = logging.DEBUG
 
 
 def setup_logging() -> None:
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(_LOGGING_LEVEL)
     formatter = logging.Formatter(_LOG_FORMAT)
 
     if not any(isinstance(handler, logging.StreamHandler) and not isinstance(handler, RotatingFileHandler) for handler in root.handlers):
         stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.INFO)
+        stream_handler.setLevel(_LOGGING_LEVEL)
         stream_handler.setFormatter(formatter)
         root.addHandler(stream_handler)
 
@@ -36,7 +37,7 @@ def setup_logging() -> None:
             backupCount=settings.log_backup_count,
             encoding="utf-8",
         )
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(_LOGGING_LEVEL)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 
