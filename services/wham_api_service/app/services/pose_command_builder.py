@@ -105,12 +105,12 @@ def build_pose2d_pipeline_spec(
         f"{_build_pose2d_shell_command(source_name, track_dir, estimate_local_only=estimate_local_only, calib=calib, visualize=True, overlay_out=out_mp4)}"
     )
     
-    # Append marker file writing for job completion detection
-    # Marker is written to /code/output/.wham_job_{job_id}_complete (guaranteed to exist and be mounted)
+    # Append marker file writing for job completion detection.
+    # WHAM_DATA_DIR is injected per backend and points at a mounted data root.
     shell_command = (
         f"({main_command}); "
         f"EXIT_CODE=$?; "
-        f"mkdir -p /code/output && echo \"$EXIT_CODE $(date)\" > /code/output/.wham_job_{job_id}_complete; "
+        f"mkdir -p \"${{WHAM_DATA_DIR}}\" && echo \"$EXIT_CODE $(date)\" > \"${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete\"; "
         f"exit $EXIT_CODE"
     )
     
@@ -153,12 +153,12 @@ def build_pose3d_pipeline_spec(
         result_name=result_name,
     )
     
-    # Append marker file writing for job completion detection
-    # Marker is written to /code/output/.wham_job_{job_id}_complete (guaranteed to exist and be mounted)
+    # Append marker file writing for job completion detection.
+    # WHAM_DATA_DIR is injected per backend and points at a mounted data root.
     shell_command = (
         f"({main_command}); "
         f"EXIT_CODE=$?; "
-        f"mkdir -p /code/output && echo \"$EXIT_CODE $(date)\" > /code/output/.wham_job_{job_id}_complete; "
+        f"mkdir -p \"${{WHAM_DATA_DIR}}\" && echo \"$EXIT_CODE $(date)\" > \"${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete\"; "
         f"exit $EXIT_CODE"
     )
     

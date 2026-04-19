@@ -176,6 +176,7 @@ class RunpodExecutionStrategy(ExecutionStrategy):
         pod_env = {
             "WHAM_JOB_ID": job_id,
             "WHAM_EXECUTION_BACKEND": self.backend_name,
+            "WHAM_DATA_DIR": str(settings.wham_data_dir),
             "WHAM_OUTPUT_DIR": runtime_params.get("output_dir", ""),
             "WHAM_SOURCE_FILENAME": runtime_params.get("source_filename", ""),
         }
@@ -237,7 +238,7 @@ class RunpodExecutionStrategy(ExecutionStrategy):
         runpodctl provides no direct stdout/stderr or job completion signal.
         """
         deadline = time.monotonic() + settings.runpod_job_timeout_seconds
-        marker_path = Path(settings.wham_data_dir) / "output" / f".wham_job_{job_id}_complete"
+        marker_path = Path(settings.wham_data_dir) / f".wham_job_{job_id}_complete"
 
         while time.monotonic() < deadline:
             # Check if completion marker exists
