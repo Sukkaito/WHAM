@@ -1,6 +1,8 @@
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.core.auth import get_request_auth
 from app.models.schemas import (
@@ -8,7 +10,7 @@ from app.models.schemas import (
     PoseJobAcceptedResponse,
     PoseJobSubmitRequest,
 )
-from app.services.job_service import get_job_status as load_job_status
+from app.services.job_service import build_job_artifacts_archive, get_job_status as load_job_status
 from app.services.pose2d_service import submit_pose2d
 from app.services.pose3d_service import submit_pose3d
 
@@ -63,4 +65,26 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="job lookup failed",
+        )
+
+@router.get("/jobs/{job_id}/artifacts/download")
+def download_job_artifacts(request: Request, job_id: str):
+    """Download a zip archive of the source video and derived artifacts for a job."""
+    auth = get_request_auth(request)
+    logger.info("download_job_artifacts job_id=%s subject=%s", job_id, auth.subject)
+    try:
+        archive_path = build_job_artifacts_archive(job_id=job_id, auth=auth)
+        return FileResponse(
+            path=archive_path,
+            media_type="application/zip",
+            filename=f"{job_id}__associated_artifacts.zip",
+            background=BackgroundTask(lambda: archive_path.unlink(missing_ok=True)),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("download_job_artifacts failed job_id=%s subject=%s", job_id, auth.subject)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="job artifacts download failed",
         )

@@ -92,6 +92,7 @@ Job lifecycle state is PostgreSQL-backed when `WHAM_DATABASE_URL` is configured.
 - `POST /v1/pose3d/jobs`: JSON body with `source_video_id` plus auth headers.
 - `GET /v1/jobs/{job_id}`: job lifecycle lookup.
 - `GET /v1/videos/{video_id}/associations`: source-to-derived lineage query.
+- `GET /v1/jobs/{job_id}/artifacts/download`: zip download of the source video and all derived artifacts for a job under the current `WHAM_data` layout.
 
 ## PostgreSQL Setup
 
@@ -148,3 +149,5 @@ curl http://localhost:8000/v1/jobs/job_123 \
 /WHAM_data/output/pose2d/   # 2D extraction results and rendered videos
 /WHAM_data/output/pose3d/   # 3D inference results (Phase 2 Step 4+)
 ```
+
+The artifacts download endpoint preserves these relative paths inside the zip archive, so the bundle mirrors the existing `WHAM_data` folder structure.

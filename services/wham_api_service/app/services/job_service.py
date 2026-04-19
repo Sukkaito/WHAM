@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tempfile
+import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -8,7 +11,7 @@ from fastapi import HTTPException, status
 from app.core.settings import settings
 from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType
 from app.db.session import get_engine, session_scope
-from app.models.schemas import JobStatus as ApiJobStatus
+from app.models.schemas import AuthPayload, JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
 from .execution_strategy import get_execution_strategy
 from .video_service import read_idx, write_idx
@@ -478,5 +481,158 @@ def get_job_status(job_id: str) -> JobStatusResponse:
                     )
 
     return _job_response_from_json(job_row)
+
+
+def _relpath_under_data_root(path: Path) -> Path:
+    resolved_root = settings.wham_data_dir.resolve()
+    resolved_path = path.resolve()
+    try:
+        return resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Path is outside WHAM data root: {path}",
+        ) from exc
+
+
+def _write_tree_to_zip(zip_file: zipfile.ZipFile, source_path: Path) -> int:
+    if source_path.is_file():
+        zip_file.write(source_path, arcname=_relpath_under_data_root(source_path).as_posix())
+        return 1
+
+    if not source_path.is_dir():
+        return 0
+
+    written = 0
+    for file_path in sorted(source_path.rglob("*")):
+        if not file_path.is_file():
+            continue
+        zip_file.write(file_path, arcname=_relpath_under_data_root(file_path).as_posix())
+        written += 1
+    return written
+
+
+def build_associated_artifacts_archive(source_video_id: str, auth: AuthPayload) -> Path:
+    index_data = read_idx()
+    videos = index_data.get("videos", {})
+
+    source_record = videos.get(source_video_id)
+    if source_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Video not found for video_id={source_video_id}",
+        )
+
+    owner_subject = source_record.get("uploaded_by")
+    if auth.subject != owner_subject:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download not authorized for this video.",
+        )
+
+    archive_file = tempfile.NamedTemporaryFile(prefix=f"{source_video_id}__artifacts_", suffix=".zip", delete=False)
+    archive_path = Path(archive_file.name)
+    archive_file.close()
+
+    written_files = 0
+    seen_paths: set[Path] = set()
+    source_storage_path = Path(source_record.get("storage_path", ""))
+
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        if source_storage_path.is_file():
+            written_files += _write_tree_to_zip(zip_file, source_storage_path)
+            seen_paths.add(source_storage_path.resolve())
+
+        for row in index_data.get("associations", {}).get(source_video_id, []):
+            result_video_id = row.get("result_video_id")
+            if not result_video_id:
+                continue
+
+            result_record = videos.get(result_video_id)
+            if result_record is None:
+                continue
+
+            storage_path = Path(result_record.get("storage_path", ""))
+            if not storage_path.exists():
+                continue
+
+            resolved_storage_path = storage_path.resolve()
+            if resolved_storage_path in seen_paths:
+                continue
+
+            written_files += _write_tree_to_zip(zip_file, storage_path.parent if storage_path.is_file() else storage_path)
+            seen_paths.add(resolved_storage_path)
+
+    if written_files == 0:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No associated artifacts found for video_id={source_video_id}",
+        )
+
+    return archive_path
+
+
+def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
+    job = get_job_status(job_id)
+    source_video_id = job.source_video_id
+    result_video_id = job.result_video_id
+
+    if source_video_id is None or result_video_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job artifacts not available for job_id={job_id}",
+        )
+
+    index_data = read_idx()
+    videos = index_data.get("videos", {})
+
+    source_record = videos.get(source_video_id)
+    if source_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source video not found for job_id={job_id}",
+        )
+
+    owner_subject = source_record.get("uploaded_by")
+    if auth.subject != owner_subject:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download not authorized for this video.",
+        )
+
+    result_record = videos.get(result_video_id)
+    if result_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Derived video not found for job_id={job_id}",
+        )
+
+    archive_file = tempfile.NamedTemporaryFile(prefix=f"{job_id}__artifacts_", suffix=".zip", delete=False)
+    archive_path = Path(archive_file.name)
+    archive_file.close()
+
+    written_files = 0
+    source_storage_path = Path(source_record.get("storage_path", ""))
+    result_storage_path = Path(result_record.get("storage_path", ""))
+
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        if source_storage_path.is_file():
+            written_files += _write_tree_to_zip(zip_file, source_storage_path)
+
+        if result_storage_path.exists():
+            written_files += _write_tree_to_zip(
+                zip_file,
+                result_storage_path.parent if result_storage_path.is_file() else result_storage_path,
+            )
+
+    if written_files == 0:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No associated artifacts found for job_id={job_id}",
+        )
+
+    return archive_path
 
 
