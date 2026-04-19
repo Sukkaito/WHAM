@@ -22,6 +22,7 @@ This folder contains a FastAPI-based media and pose service for WHAM inference w
 - `WHAM_BOOTSTRAP_API_KEYS`: optional CSV bootstrap list like `service-a:key-1,service-b:key-2`.
 - `WHAM_BOOTSTRAP_API_KEYS_FILE`: optional JSON bootstrap file for API keys.
 - `WHAM_DOCKER_CLEANUP_ENABLED`: remove exited job containers after status is recorded.
+- `WHAM_JOB_LAUNCH_UTC_START`, `WHAM_JOB_LAUNCH_UTC_END`: optional UTC launch window for starting queued jobs (`HH:MM` format). Leave both empty to allow launches at any time.
 - `WHAM_POSE2D_VISUALIZE`, `WHAM_POSE3D_VISUALIZE`: server-owned execution defaults.
 - `WHAM_POSE2D_ESTIMATE_LOCAL_ONLY`, `WHAM_POSE3D_ESTIMATE_LOCAL_ONLY`: local-only fallback flags.
 - `WHAM_POSE3D_SAVE_PKL`, `WHAM_POSE3D_RUN_SMPLIFY`: pose3d runtime profile flags.

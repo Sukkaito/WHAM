@@ -173,6 +173,23 @@ def _run_job_worker_cycle(job_id: str) -> None:
         job_id=job_id,
         backend=backend,
     )
+    if not settings.is_job_launch_time_allowed_utc():
+        wait_seconds = settings.seconds_until_next_job_launch_window_utc()
+        retry_delay_seconds = max(1, min(wait_seconds, 300))
+        log_event(
+            _logger,
+            "job_launch_deferred_outside_utc_window",
+            job_id=job_id,
+            backend=backend,
+            configured_window=f"{settings.job_launch_utc_start}-{settings.job_launch_utc_end}",
+            seconds_until_window=wait_seconds,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+        timer = threading.Timer(retry_delay_seconds, enqueue_job, args=(job_id,))
+        timer.daemon = True
+        timer.start()
+        return
+
     if _is_job_terminal(job_id):
         return
     launch_result = strategy.launch(job_id, runtime_params)
