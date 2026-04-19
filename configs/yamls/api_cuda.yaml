@@ -5,3 +5,6 @@ FLIP_EVAL: True
 
 MODEL:
   BACKBONE: 'vit'
+
+TRAIN:
+  CHECKPOINT: 'checkpoints/wham_vit_bedlam_w_3dpw.pth.tar'
