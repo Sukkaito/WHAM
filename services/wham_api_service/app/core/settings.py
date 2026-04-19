@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file in service root directory
 env_file = Path(__file__).parent.parent.parent / ".env"
 if env_file.exists():
-    load_dotenv(env_file, override=False)  # override=False keeps existing env vars
+    load_dotenv(env_file, override=True)  # override=False keeps existing env vars
 
 
 class Settings:
