@@ -57,6 +57,7 @@ Keys are verified against the PostgreSQL `api_keys` table, with optional bootstr
 - `GET /v1/videos/{video_id}/download`: Auth-gated file streaming.
 - `POST /v1/pose2d/jobs`: Submit 2D pose extraction/rendering job.
 - `POST /v1/pose3d/jobs`: Submit 3D pose inference job (placeholder).
+- `GET /v1/jobs`: List jobs with optional filters.
 - `GET /v1/jobs/{job_id}`: Query job status (placeholder).
 - `POST /v1/jobs/{job_id}/cancel`: Cancel a queued or running job.
 - `GET /v1/videos/{video_id}/associations`: List derived videos from source.
@@ -91,6 +92,7 @@ Job lifecycle state is PostgreSQL-backed when `WHAM_DATABASE_URL` is configured.
 - `GET /v1/videos/{video_id}/download`: download with auth headers.
 - `POST /v1/pose2d/jobs`: JSON body with `source_video_id` plus auth headers.
 - `POST /v1/pose3d/jobs`: JSON body with `source_video_id` plus auth headers.
+- `GET /v1/jobs`: list jobs for the authenticated subject with filters `status`, `job_type`, `source_video_id`, `result_video_id`, `execution_backend`, `limit`, and `offset`.
 - `GET /v1/jobs/{job_id}`: job lifecycle lookup.
 - `POST /v1/jobs/{job_id}/cancel`: cancel a queued/running job for an authorized source owner.
 - `GET /v1/videos/{video_id}/associations`: source-to-derived lineage query.
@@ -141,6 +143,14 @@ Job status:
 
 ```bash
 curl http://localhost:8000/v1/jobs/job_123 \
+  -H 'X-WHAM-Subject: service-a' \
+  -H 'X-WHAM-Api-Key: key-1'
+```
+
+List jobs (with filters):
+
+```bash
+curl 'http://localhost:8000/v1/jobs?status=queued&job_type=pose2d&limit=20&offset=0' \
   -H 'X-WHAM-Subject: service-a' \
   -H 'X-WHAM-Api-Key: key-1'
 ```

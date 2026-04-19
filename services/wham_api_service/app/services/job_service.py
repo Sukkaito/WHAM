@@ -12,7 +12,7 @@ from app.core.logging import get_logger, log_event
 from app.core.settings import settings
 from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType
 from app.db.session import get_engine, session_scope
-from app.models.schemas import AuthPayload, JobStatus as ApiJobStatus
+from app.models.schemas import AuthPayload, JobListResponse, JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
 from .execution_strategy import get_execution_strategy
 from .video_service import read_idx, write_idx
@@ -487,6 +487,139 @@ def get_job_status(job_id: str) -> JobStatusResponse:
                     )
 
     return _job_response_from_json(job_row)
+
+
+def list_jobs(
+    *,
+    auth: AuthPayload,
+    status_filter: ApiJobStatus | None = None,
+    job_type_filter: TransformType | None = None,
+    source_video_id: str | None = None,
+    result_video_id: str | None = None,
+    execution_backend: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JobListResponse:
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    idx = read_idx()
+    videos = idx.get("videos", {})
+
+    def _authorized_source(video_id: str | None) -> bool:
+        if not video_id:
+            return False
+        source_record = videos.get(video_id)
+        if source_record is None:
+            return False
+        return source_record.get("uploaded_by") == auth.subject
+
+    def _matches_filters(row: dict[str, Any]) -> bool:
+        row_status = row.get("status")
+        row_job_type = row.get("transform_type")
+        row_source_video_id = row.get("source_video_id")
+        row_result_video_id = row.get("result_video_id")
+        row_execution_backend = (row.get("execution_backend") or "").strip().lower()
+
+        if status_filter and row_status != status_filter.value:
+            return False
+        if job_type_filter and row_job_type != job_type_filter.value:
+            return False
+        if source_video_id and row_source_video_id != source_video_id:
+            return False
+        if result_video_id and row_result_video_id != result_video_id:
+            return False
+        if execution_backend and row_execution_backend != execution_backend.strip().lower():
+            return False
+        if not _authorized_source(row_source_video_id):
+            return False
+        return True
+
+    database_ready = _database_ready()
+    rows: list[dict[str, Any]] = []
+
+    if database_ready:
+        from app.db.models import JobRecord
+
+        with session_scope() as session:
+            query = session.query(JobRecord)
+            if status_filter:
+                query = query.filter(JobRecord.status == _to_db_status(status_filter))
+            if job_type_filter:
+                query = query.filter(JobRecord.transform_type == DbTransformType(job_type_filter.value))
+            if source_video_id:
+                query = query.filter(JobRecord.source_video_id == source_video_id)
+            if result_video_id:
+                query = query.filter(JobRecord.result_video_id == result_video_id)
+            if execution_backend:
+                query = query.filter(JobRecord.execution_backend == execution_backend.strip().lower())
+
+            for job in query.order_by(JobRecord.created_at.desc()).all():
+                runtime_params = job.runtime_params or {}
+                if not isinstance(runtime_params, dict):
+                    runtime_params = {}
+                row = {
+                    "job_id": job.job_id,
+                    "job_name": job.job_name,
+                    "transform_type": job.transform_type.value if job.transform_type else None,
+                    "source_video_id": job.source_video_id,
+                    "result_video_id": job.result_video_id,
+                    "status": job.status.value,
+                    "container_name": job.container_name,
+                    "pod_id": job.pod_id,
+                    "pod_name": job.pod_name,
+                    "execution_backend": job.execution_backend,
+                    "exit_code": job.exit_code,
+                    "error_summary": job.error_summary,
+                    "runtime_params": runtime_params,
+                    "created_at": job.created_at,
+                    "updated_at": job.updated_at,
+                }
+                if _matches_filters(row):
+                    rows.append(row)
+    else:
+        json_jobs = idx.get("jobs", {})
+        for _, row in json_jobs.items():
+            row = row or {}
+            if _matches_filters(row):
+                rows.append(row)
+
+        def _sort_key(row: dict[str, Any]) -> str:
+            return str(row.get("created_at") or row.get("updated_at") or "")
+
+        rows.sort(key=_sort_key, reverse=True)
+
+    total = len(rows)
+    page_rows = rows[offset : offset + limit]
+
+    jobs: list[JobStatusResponse] = []
+    for row in page_rows:
+        if database_ready:
+            runtime_params = row.get("runtime_params") or {}
+            if not isinstance(runtime_params, dict):
+                runtime_params = {}
+            jobs.append(
+                JobStatusResponse(
+                    job_id=row["job_id"],
+                    job_name=row.get("job_name", f"job-{row['job_id']}"),
+                    transform_type=TransformType(row["transform_type"]) if row.get("transform_type") else None,
+                    source_video_id=row.get("source_video_id"),
+                    result_video_id=row.get("result_video_id"),
+                    status=ApiJobStatus(row["status"]),
+                    container_name=row.get("container_name") or runtime_params.get("container_name"),
+                    pod_id=row.get("pod_id") or runtime_params.get("pod_id"),
+                    pod_name=row.get("pod_name") or runtime_params.get("pod_name"),
+                    execution_backend=row.get("execution_backend") or runtime_params.get("execution_backend"),
+                    exit_code=row.get("exit_code"),
+                    error_summary=row.get("error_summary"),
+                    created_at=row.get("created_at"),
+                    updated_at=row.get("updated_at"),
+                )
+            )
+        else:
+            jobs.append(_job_response_from_json(row))
+
+    return JobListResponse(jobs=jobs, total=total, limit=limit, offset=offset)
 
 
 def cancel_job(job_id: str, auth: AuthPayload) -> JobStatusResponse:

@@ -1,18 +1,23 @@
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from app.core.auth import get_request_auth
 from app.models.schemas import (
+    JobListResponse,
+    JobStatus,
     JobStatusResponse,
     PoseJobAcceptedResponse,
     PoseJobSubmitRequest,
+    TransformType,
 )
 from app.services.job_service import (
     build_job_artifacts_archive,
     cancel_job as cancel_job_service,
+    list_jobs as load_jobs,
     get_job_status as load_job_status,
 )
 from app.services.pose2d_service import submit_pose2d
@@ -69,6 +74,51 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="job lookup failed",
+        )
+
+
+@router.get("/jobs", response_model=JobListResponse)
+def list_jobs(
+    request: Request,
+    status_filter: Optional[JobStatus] = Query(default=None, alias="status"),
+    job_type_filter: Optional[TransformType] = Query(default=None, alias="job_type"),
+    source_video_id: Optional[str] = Query(default=None),
+    result_video_id: Optional[str] = Query(default=None),
+    execution_backend: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> JobListResponse:
+    """List jobs for the authenticated subject with optional filters."""
+    auth = get_request_auth(request)
+    logger.info(
+        "list_jobs subject=%s status=%s job_type=%s source_video_id=%s result_video_id=%s execution_backend=%s limit=%s offset=%s",
+        auth.subject,
+        status_filter.value if status_filter else None,
+        job_type_filter.value if job_type_filter else None,
+        source_video_id,
+        result_video_id,
+        execution_backend,
+        limit,
+        offset,
+    )
+    try:
+        return load_jobs(
+            auth=auth,
+            status_filter=status_filter,
+            job_type_filter=job_type_filter,
+            source_video_id=source_video_id,
+            result_video_id=result_video_id,
+            execution_backend=execution_backend,
+            limit=limit,
+            offset=offset,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("list_jobs failed subject=%s", auth.subject)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="job list failed",
         )
 
 

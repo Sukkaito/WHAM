@@ -58,6 +58,13 @@ class JobStatusResponse(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class JobListResponse(BaseModel):
+    jobs: List[JobStatusResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class DerivedVideoAssociation(BaseModel):
     result_video_id: str
     transform_type: TransformType
