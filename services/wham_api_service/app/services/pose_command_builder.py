@@ -9,7 +9,6 @@ from app.services.docker_executor import _get_docker_base_args
 
 def to_runpod_entrypoint(shell_command: str) -> list[str]:
     return [shell_command]
-    # return ["whoami"]
 
 
 def _build_pose2d_shell_command(
@@ -100,10 +99,21 @@ def build_pose2d_pipeline_spec(
     track_dir = f"{out_base}/{stem}"
     out_mp4 = f"{track_dir}/{result_name}"
 
-    shell_command = (
+    # Build the main command
+    main_command = (
         f"mkdir -p {shlex.quote(track_dir)} && "
         f"{_build_pose2d_shell_command(source_name, track_dir, estimate_local_only=estimate_local_only, calib=calib, visualize=True, overlay_out=out_mp4)}"
     )
+    
+    # Append marker file writing for job completion detection
+    # Marker is written to /code/output/.wham_job_{job_id}_complete (guaranteed to exist and be mounted)
+    shell_command = (
+        f"({main_command}); "
+        f"EXIT_CODE=$?; "
+        f"mkdir -p /code/output && echo \"$EXIT_CODE $(date)\" > /code/output/.wham_job_{job_id}_complete; "
+        f"exit $EXIT_CODE"
+    )
+    
     docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose2d-{job_id}", remove_on_exit=False)
     docker_cmd.extend([
         settings.docker_image,
@@ -132,7 +142,7 @@ def build_pose3d_pipeline_spec(
     run_smplify: bool = False,
     calib: str | None = None,
 ) -> dict[str, list[str] | str]:
-    shell_command = _build_pose3d_shell_command(
+    main_command = _build_pose3d_shell_command(
         source_name=source_name,
         output_dir=output_dir,
         estimate_local_only=estimate_local_only,
@@ -142,6 +152,16 @@ def build_pose3d_pipeline_spec(
         calib=calib,
         result_name=result_name,
     )
+    
+    # Append marker file writing for job completion detection
+    # Marker is written to /code/output/.wham_job_{job_id}_complete (guaranteed to exist and be mounted)
+    shell_command = (
+        f"({main_command}); "
+        f"EXIT_CODE=$?; "
+        f"mkdir -p /code/output && echo \"$EXIT_CODE $(date)\" > /code/output/.wham_job_{job_id}_complete; "
+        f"exit $EXIT_CODE"
+    )
+    
     docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose3d-{job_id}", remove_on_exit=False)
     docker_cmd.extend([
         settings.docker_image,

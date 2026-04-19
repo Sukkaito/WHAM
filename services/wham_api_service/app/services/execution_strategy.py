@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from app.core.settings import settings
@@ -229,33 +230,43 @@ class RunpodExecutionStrategy(ExecutionStrategy):
         )
 
     def wait_for_completion(self, job_id: str, identifier: str, runtime_params: dict[str, Any]) -> ExecutionCompletionResult:
+        """Poll for pod completion by checking a marker file in mounted volume.
+        
+        The entrypoint script writes a marker file to the mounted volume after
+        execution completes. We poll for this file to detect completion since
+        runpodctl provides no direct stdout/stderr or job completion signal.
+        """
         deadline = time.monotonic() + settings.runpod_job_timeout_seconds
-        last_status_text = ""
+        marker_path = Path(settings.wham_data_dir) / "output" / f".wham_job_{job_id}_complete"
 
         while time.monotonic() < deadline:
-            inspection = self.inspect(identifier, runtime_params)
-            status_text = f"{inspection.stdout}\n{inspection.stderr}".strip()
-            last_status_text = status_text or last_status_text
-
-            if inspection.state == "running" or inspection.state == "unknown":
-                time.sleep(max(settings.runpod_poll_interval_seconds, 1))
-                continue
-
-            if inspection.state == "succeeded":
-                return ExecutionCompletionResult(status_value=ApiJobStatus.succeeded, exit_code=0, error_summary=None)
-
-            logs_result = fetch_runpod_pod_logs(identifier, cwd=settings.repo_dir)
-            error_summary = logs_result.stderr or logs_result.stdout or last_status_text or f"Runpod pod {identifier} failed"
-            return ExecutionCompletionResult(
-                status_value=ApiJobStatus.failed,
-                exit_code=inspection.exit_code,
-                error_summary=error_summary,
-            )
+            # Check if completion marker exists
+            if marker_path.exists():
+                try:
+                    exit_code_text = marker_path.read_text().strip()
+                    exit_code = int(exit_code_text.split()[0])
+                except Exception as e:
+                    return ExecutionCompletionResult(
+                        status_value=ApiJobStatus.failed,
+                        exit_code=None,
+                        error_summary=f"Failed to read completion marker: {e}",
+                    )
+                
+                if exit_code == 0:
+                    return ExecutionCompletionResult(status_value=ApiJobStatus.succeeded, exit_code=0, error_summary=None)
+                
+                return ExecutionCompletionResult(
+                    status_value=ApiJobStatus.failed,
+                    exit_code=exit_code,
+                    error_summary=f"Job {job_id} exited with code {exit_code}",
+                )
+            
+            time.sleep(max(settings.runpod_poll_interval_seconds, 1))
 
         return ExecutionCompletionResult(
             status_value=ApiJobStatus.failed,
             exit_code=None,
-            error_summary=f"Runpod pod {identifier} exceeded timeout while waiting for completion",
+            error_summary=f"Job {job_id} exceeded timeout ({settings.runpod_job_timeout_seconds}s) waiting for completion marker",
         )
 
     def cleanup(self, identifier: str | None) -> None:
