@@ -16,6 +16,8 @@ Usage:
 import argparse
 import os
 import os.path as osp
+import sys
+import traceback
 from collections import defaultdict
 from pathlib import Path
 
@@ -39,7 +41,7 @@ from lib.models.smplify import TemporalSMPLify
 from lib.utils.transforms import matrix_to_axis_angle
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(
         description="Run WHAM 3D pose inference on preprocessed 2D detection data"
     )
@@ -198,6 +200,9 @@ def main():
             results[_id]['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
             results[_id]['frame_ids'] = frame_id
 
+    if len(results) == 0:
+        raise RuntimeError("No subjects inferred from preprocessing artifacts")
+
     # Save results
     if args.save_pkl:
         out_path = osp.join(str(output_dir), "wham_output.pkl")
@@ -214,7 +219,13 @@ def main():
             )
 
     print(f"[extract_3d_poses] Success")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"[extract_3d_poses] Failed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)

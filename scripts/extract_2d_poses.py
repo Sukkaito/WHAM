@@ -16,6 +16,8 @@ Usage:
 """
 import argparse
 import os.path as osp
+import sys
+import traceback
 from pathlib import Path
 
 import cv2
@@ -44,7 +46,7 @@ except Exception:
     _run_global = False
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(
         description="Extract 2D pose tracking from video"
     )
@@ -176,6 +178,9 @@ def main():
     joblib.dump(tracking_results, out_path)
     joblib.dump(slam_results, slam_out_path)
 
+    if not isinstance(tracking_results, dict) or len(tracking_results) == 0:
+        raise RuntimeError("No person tracks detected in video")
+
     # Report statistics
     num_persons = len(tracking_results)
     num_frames_tracked = 0
@@ -208,7 +213,13 @@ def main():
         print(f"[extract_2d_poses] Saved: {overlay_out}")
 
     print(f"[extract_2d_poses] Success")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"[extract_2d_poses] Failed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
