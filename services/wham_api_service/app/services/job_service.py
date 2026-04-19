@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from app.core.logging import get_logger, log_event
 from app.core.settings import settings
 from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType
 from app.db.session import get_engine, session_scope
@@ -16,8 +17,13 @@ from app.models.schemas import JobStatusResponse, TransformType
 from .execution_strategy import get_execution_strategy
 from .video_service import read_idx, write_idx
 
+_logger = get_logger(__name__)
+
 
 _ERROR_SUMMARY_MAX_LEN = 1024
+_CANCELLED_ERROR_SUMMARY = "Job cancelled by user request"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -481,6 +487,129 @@ def get_job_status(job_id: str) -> JobStatusResponse:
                     )
 
     return _job_response_from_json(job_row)
+
+
+def cancel_job(job_id: str, auth: AuthPayload) -> JobStatusResponse:
+    database_ready = _database_ready()
+
+    if database_ready:
+        with session_scope() as session:
+            job = session.get(JobRecord, job_id)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job not found for job_id={job_id}",
+                )
+
+            idx = read_idx()
+            source_record = idx.get("videos", {}).get(job.source_video_id)
+            if source_record is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Source video not found for job_id={job_id}",
+                )
+            if auth.subject != source_record.get("uploaded_by"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Cancel not authorized for this job.",
+                )
+
+            if job.status in {DbJobStatus.succeeded, DbJobStatus.failed}:
+                log_event(_logger, "cancel_job_already_terminal", job_id=job_id, status=job.status.value)
+                return _job_to_response(job)
+
+            status_value = job.status
+            execution_backend = job.execution_backend
+            pod_id = job.pod_id
+            container_name = job.container_name
+            runtime_params = job.runtime_params or {}
+
+        if not isinstance(runtime_params, dict):
+            runtime_params = {}
+
+        exit_code = 130
+        error_summary = _CANCELLED_ERROR_SUMMARY
+
+        if status_value == DbJobStatus.queued:
+            log_event(_logger, "cancel_job_queued", job_id=job_id, subject=auth.subject)
+        elif status_value == DbJobStatus.running:
+            log_event(_logger, "cancel_job_running", job_id=job_id, subject=auth.subject)
+            backend = (execution_backend or runtime_params.get("execution_backend") or settings.execution_backend).strip().lower()
+            strategy = get_execution_strategy(backend)
+            identifier = pod_id or runtime_params.get("pod_id") or container_name or runtime_params.get("container_name")
+            if identifier:
+                termination = strategy.terminate(identifier, runtime_params)
+                if termination.exit_code is not None:
+                    exit_code = termination.exit_code
+                if termination.state == "running" and termination.error_summary:
+                    error_summary = f"{_CANCELLED_ERROR_SUMMARY}. Termination warning: {termination.error_summary}"
+
+        update_job_completion(
+            job_id=job_id,
+            status_value=ApiJobStatus.failed,
+            exit_code=exit_code,
+            error_summary=error_summary,
+        )
+        log_event(_logger, "cancel_job_completed", job_id=job_id, subject=auth.subject, exit_code=exit_code)
+
+        return get_job_status(job_id)
+
+    idx = read_idx()
+    job_row = idx.get("jobs", {}).get(job_id)
+    if job_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found for job_id={job_id}",
+        )
+
+    source_video_id = job_row.get("source_video_id")
+    source_record = idx.get("videos", {}).get(source_video_id)
+    if source_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Source video not found for job_id={job_id}",
+        )
+    if auth.subject != source_record.get("uploaded_by"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cancel not authorized for this job.",
+        )
+
+    status_value = job_row.get("status") or ApiJobStatus.queued.value
+    if status_value in {ApiJobStatus.succeeded.value, ApiJobStatus.failed.value}:
+        log_event(_logger, "cancel_job_already_terminal", job_id=job_id, status=status_value)
+        return _job_response_from_json(job_row)
+
+    runtime_params = job_row.get("runtime_params") or {}
+    if not isinstance(runtime_params, dict):
+        runtime_params = {}
+
+    exit_code = 130
+    error_summary = _CANCELLED_ERROR_SUMMARY
+
+    if status_value == ApiJobStatus.queued.value:
+        log_event(_logger, "cancel_job_queued", job_id=job_id, subject=auth.subject)
+    elif status_value == ApiJobStatus.running.value:
+        log_event(_logger, "cancel_job_running", job_id=job_id, subject=auth.subject)
+        execution_backend = (job_row.get("execution_backend") or runtime_params.get("execution_backend") or settings.execution_backend).strip().lower()
+        strategy = get_execution_strategy(execution_backend)
+        identifier = job_row.get("pod_id") or runtime_params.get("pod_id") or job_row.get("container_name") or runtime_params.get("container_name")
+        if identifier:
+            termination = strategy.terminate(identifier, runtime_params)
+            if termination.exit_code is not None:
+                exit_code = termination.exit_code
+            if termination.state == "running" and termination.error_summary:
+                error_summary = f"{_CANCELLED_ERROR_SUMMARY}. Termination warning: {termination.error_summary}"
+
+    update_job_completion(
+        job_id=job_id,
+        status_value=ApiJobStatus.failed,
+        exit_code=exit_code,
+        error_summary=error_summary,
+    )
+    log_event(_logger, "cancel_job_completed", job_id=job_id, subject=auth.subject, exit_code=exit_code)
+
+    return get_job_status(job_id)
 
 
 def _relpath_under_data_root(path: Path) -> Path:

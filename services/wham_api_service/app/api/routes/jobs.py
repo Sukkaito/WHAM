@@ -10,7 +10,11 @@ from app.models.schemas import (
     PoseJobAcceptedResponse,
     PoseJobSubmitRequest,
 )
-from app.services.job_service import build_job_artifacts_archive, get_job_status as load_job_status
+from app.services.job_service import (
+    build_job_artifacts_archive,
+    cancel_job as cancel_job_service,
+    get_job_status as load_job_status,
+)
 from app.services.pose2d_service import submit_pose2d
 from app.services.pose3d_service import submit_pose3d
 
@@ -66,6 +70,24 @@ def get_job_status(job_id: str) -> JobStatusResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="job lookup failed",
         )
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=JobStatusResponse)
+def cancel_job(request: Request, job_id: str) -> JobStatusResponse:
+    """Cancel a queued or running job and persist terminal state."""
+    auth = get_request_auth(request)
+    logger.info("cancel_job job_id=%s subject=%s", job_id, auth.subject)
+    try:
+        return cancel_job_service(job_id=job_id, auth=auth)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("cancel_job failed job_id=%s subject=%s", job_id, auth.subject)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="job cancellation failed",
+        )
+
 
 @router.get("/jobs/{job_id}/artifacts/download")
 def download_job_artifacts(request: Request, job_id: str):

@@ -19,6 +19,13 @@ _worker_started = False
 _logger = get_logger(__name__)
 
 
+def _is_job_terminal(job_id: str) -> bool:
+    row = _get_job_record_for_worker(job_id)
+    if row is None:
+        return True
+    return row["status"] in {ApiJobStatus.succeeded.value, ApiJobStatus.failed.value}
+
+
 def _get_job_record_for_worker(job_id: str) -> dict[str, Any] | None:
     from app.db.models import JobRecord
     from app.db.session import session_scope
@@ -85,6 +92,9 @@ def _run_job_worker_cycle(job_id: str) -> None:
     if status_value in {ApiJobStatus.succeeded.value, ApiJobStatus.failed.value}:
         return
 
+    if _is_job_terminal(job_id):
+        return
+
     if status_value == ApiJobStatus.running.value:
         identifier = row.get("pod_id") if backend == "runpod" else row.get("container_name")
         if not identifier:
@@ -120,6 +130,8 @@ def _run_job_worker_cycle(job_id: str) -> None:
         )
         if inspection.state == "running":
             completion = strategy.wait_for_completion(job_id, identifier, runtime_params)
+            if _is_job_terminal(job_id):
+                return
             log_event(
                 _logger,
                 "job_wait_completion",
@@ -136,12 +148,16 @@ def _run_job_worker_cycle(job_id: str) -> None:
                 error_summary=completion.error_summary,
             )
         elif inspection.state == "succeeded":
+            if _is_job_terminal(job_id):
+                return
             update_job_completion(
                 job_id=job_id,
                 status_value=ApiJobStatus.succeeded,
                 exit_code=inspection.exit_code,
             )
         else:
+            if _is_job_terminal(job_id):
+                return
             update_job_completion(
                 job_id=job_id,
                 status_value=ApiJobStatus.failed,
@@ -157,8 +173,12 @@ def _run_job_worker_cycle(job_id: str) -> None:
         job_id=job_id,
         backend=backend,
     )
+    if _is_job_terminal(job_id):
+        return
     launch_result = strategy.launch(job_id, runtime_params)
     if not launch_result.success:
+        if _is_job_terminal(job_id):
+            return
         failure_message = (launch_result.stderr or launch_result.stdout or f"{strategy.backend_name} launch failed").strip()
         log_event(
             _logger,
@@ -202,6 +222,8 @@ def _run_job_worker_cycle(job_id: str) -> None:
         return
 
     completion = strategy.wait_for_completion(job_id, identifier, runtime_params)
+    if _is_job_terminal(job_id):
+        return
     log_event(
         _logger,
         "job_completed",

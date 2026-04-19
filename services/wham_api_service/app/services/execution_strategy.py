@@ -56,6 +56,10 @@ class ExecutionStrategy(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def terminate(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        raise NotImplementedError
+
+    @abstractmethod
     def cleanup(self, identifier: str | None) -> None:
         raise NotImplementedError
 
@@ -153,6 +157,26 @@ class DockerExecutionStrategy(ExecutionStrategy):
         logs_result = execute_docker_blocking(["docker", "logs", "--tail", "200", identifier], cwd=settings.repo_dir)
         error_summary = (logs_result.stderr or logs_result.stdout or "Docker container failed").strip()
         return ExecutionCompletionResult(status_value=ApiJobStatus.failed, exit_code=exit_code, error_summary=error_summary)
+
+    def terminate(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        remove_result = remove_container(identifier)
+        if remove_result.success:
+            return ExecutionInspectionResult(
+                state="failed",
+                exit_code=137,
+                error_summary="Job cancelled by user request",
+                stdout=remove_result.stdout,
+                stderr=remove_result.stderr,
+            )
+
+        error_summary = (remove_result.stderr or remove_result.stdout or f"Failed to terminate Docker container {identifier}").strip()
+        return ExecutionInspectionResult(
+            state="missing" if "No such container" in error_summary else "running",
+            exit_code=remove_result.returncode,
+            error_summary=error_summary,
+            stdout=remove_result.stdout,
+            stderr=remove_result.stderr,
+        )
 
     def cleanup(self, identifier: str | None) -> None:
         if not identifier or not settings.docker_cleanup_enabled:
@@ -268,6 +292,31 @@ class RunpodExecutionStrategy(ExecutionStrategy):
             status_value=ApiJobStatus.failed,
             exit_code=None,
             error_summary=f"Job {job_id} exceeded timeout ({settings.runpod_job_timeout_seconds}s) waiting for completion marker",
+        )
+
+    def terminate(self, identifier: str, runtime_params: dict[str, Any]) -> ExecutionInspectionResult:
+        delete_result = delete_runpod_pod(identifier)
+        if delete_result.success:
+            return ExecutionInspectionResult(
+                state="failed",
+                exit_code=137,
+                error_summary="Job cancelled by user request",
+                stdout=delete_result.stdout,
+                stderr=delete_result.stderr,
+            )
+
+        error_summary = (delete_result.stderr or delete_result.stdout or f"Failed to terminate Runpod pod {identifier}").strip()
+        lowered = error_summary.lower()
+        if "not found" in lowered or "missing" in lowered:
+            state = "missing"
+        else:
+            state = "running"
+        return ExecutionInspectionResult(
+            state=state,
+            exit_code=delete_result.returncode,
+            error_summary=error_summary,
+            stdout=delete_result.stdout,
+            stderr=delete_result.stderr,
         )
 
     def cleanup(self, identifier: str | None) -> None:
