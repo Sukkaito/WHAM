@@ -82,10 +82,14 @@ def create_app() -> FastAPI:
             "WHAMSubjectHeader": [],
             "WHAMApiKeyHeader": [],
         }
-        for path_item in openapi_schema.get("paths", {}).values():
+        public_paths = {"/ping"}
+        for path, path_item in openapi_schema.get("paths", {}).items():
             for operation in path_item.values():
                 if isinstance(operation, dict):
-                    operation.setdefault("security", []).insert(0, security_requirement)
+                    if path in public_paths:
+                        operation["security"] = []
+                    else:
+                        operation.setdefault("security", []).insert(0, security_requirement)
 
         app.openapi_schema = openapi_schema
         return app.openapi_schema

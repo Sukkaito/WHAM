@@ -4,8 +4,14 @@ __pycache__/
 output/
 dataset/
 checkpoints/
-services/
+videos/
+examples/
 *.mp4
 *.mov
 *.mkv
 *.avi
+.agents
+.github
+**/Dockerfile*
+!Dockerfile.runpod
+**/.env

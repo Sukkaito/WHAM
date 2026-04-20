@@ -21,6 +21,7 @@ _EXEMPT_PATHS = {
     "/openapi.json",
     "/redoc",
     "/",
+    "/ping",
 }
 
 
