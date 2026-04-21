@@ -12,8 +12,10 @@ def ensure_repo_root_on_path() -> None:
     if root_dir_str not in sys.path:
         sys.path.insert(0, root_dir_str)
 
-    base = Path(__file__).parent.parent / "third-party" / "ViTPose"
-    sys.path.insert(0, str(base))
+    vitpose = Path(__file__).parent.parent / "third-party" / "ViTPose"
+    sys.path.insert(0, str(vitpose))
+    dpvo = Path(__file__).parent.parent / "third-party" / "DPVO"
+    sys.path.insert(0, str(dpvo))
     #print(dict(os.environ))
     
 
