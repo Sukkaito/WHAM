@@ -124,6 +124,12 @@ class Settings:
             "yes",
             "on",
         }
+        self.requeue_jobs_on_startup = os.getenv("WHAM_REQUEUE_JOBS_ON_STARTUP", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.log_dir = Path(os.getenv("WHAM_LOG_DIR", str(self.wham_data_dir / "logs")))
         self.log_file_name = os.getenv("WHAM_LOG_FILE_NAME", "wham_api_service.log")
         self.log_file_path = self.log_dir / self.log_file_name
@@ -157,6 +163,7 @@ class Settings:
         print(f"  Auth subject header: {self.auth_subject_header}")
         print(f"  Auth api-key header: {self.auth_api_key_header}")
         print(f"  Docker cleanup enabled: {self.docker_cleanup_enabled}")
+        print(f"  Requeue jobs on startup: {self.requeue_jobs_on_startup}")
         print(f"  Runpod image: {self.runpod_image}")
         print(f"  Runpod template: {self.runpod_template_id or '<unset>'}")
         print(f"  Runpod volume: {self.runpod_network_volume_id or '<unset>'}")

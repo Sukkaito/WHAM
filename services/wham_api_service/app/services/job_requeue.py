@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logging import get_logger, log_event
+from app.core.settings import settings
 from app.db.models import JobRecord, JobStatus as DbJobStatus
 from app.db.session import session_scope
 from app.models.schemas import JobStatus as ApiJobStatus
@@ -137,7 +138,22 @@ def _reconcile_running_job(job: dict[str, Any]) -> bool:
 
 def requeue_unfinished_jobs() -> None:
     jobs = _next_unfinished_jobs()
-    log_event(_logger, "startup_requeue_scan", unfinished_count=len(jobs))
+    log_event(_logger, "startup_requeue_scan", unfinished_count=len(jobs), requeue_enabled=settings.requeue_jobs_on_startup)
+    
+    if not settings.requeue_jobs_on_startup:
+        # Cancel all unfinished jobs if requeue is disabled
+        for job in jobs:
+            job_id = job["job_id"]
+            status_value = job.get("status")
+            update_job_completion(
+                job_id=job_id,
+                status_value=ApiJobStatus.cancelled,
+                error_summary="Job cancelled due to requeue being disabled on startup",
+            )
+            log_event(_logger, "startup_cancel_unfinished_job", job_id=job_id, status=status_value)
+        return
+    
+    # Original requeue logic
     for job in jobs:
         job_id = job["job_id"]
         status_value = job.get("status")

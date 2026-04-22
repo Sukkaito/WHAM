@@ -50,7 +50,8 @@ def create_app() -> FastAPI:
         init_db()
         bootstrap_api_keys()
         start_job_worker(worker_count=settings.job_worker_count)
-        requeue_unfinished_jobs()
+        if settings.requeue_jobs_on_startup:
+            requeue_unfinished_jobs()
 
     app.include_router(api_router)
 
