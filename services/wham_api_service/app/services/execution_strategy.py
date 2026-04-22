@@ -92,6 +92,24 @@ def _normalize_docker_state(text: str) -> str:
     return "unknown"
 
 
+def _parse_completion_marker_exit_code(marker_text: str) -> int | None:
+    lines = [line.strip() for line in marker_text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("EXIT_CODE:"):
+            try:
+                return int(line.split(":", 1)[1].strip())
+            except Exception:
+                return None
+
+    if not lines:
+        return None
+
+    try:
+        return int(lines[0].split()[0])
+    except Exception:
+        return None
+
+
 class DockerExecutionStrategy(ExecutionStrategy):
     backend_name = "docker"
 
@@ -268,8 +286,10 @@ class RunpodExecutionStrategy(ExecutionStrategy):
             # Check if completion marker exists
             if marker_path.exists():
                 try:
-                    exit_code_text = marker_path.read_text().strip()
-                    exit_code = int(exit_code_text.split()[0])
+                    marker_text = marker_path.read_text()
+                    exit_code = _parse_completion_marker_exit_code(marker_text)
+                    if exit_code is None:
+                        raise ValueError("marker file does not contain a parseable EXIT_CODE footer")
                 except Exception as e:
                     return ExecutionCompletionResult(
                         status_value=ApiJobStatus.failed,

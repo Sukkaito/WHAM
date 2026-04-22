@@ -38,6 +38,25 @@ def _build_pose2d_shell_command(
     return " ".join(parts)
 
 
+def _build_logged_marker_shell_command(main_command: str, job_id: str) -> str:
+    marker_path = f'${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete'
+    temp_marker_path = f'${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete.tmp'
+    return (
+        f"mkdir -p \"${{WHAM_DATA_DIR}}\" && "
+        f"{{ "
+        f"  echo '=== WHAM JOB LOG START ==='; "
+        f"  echo \"START_TIME: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
+        f"  echo \"COMMAND: {shlex.quote(main_command)}\"; "
+        f"  {main_command} 2>&1; "
+        f"  EXIT_CODE=$?; "
+        f"  echo '=== WHAM JOB LOG END ==='; "
+        f"  echo \"EXIT_CODE: $EXIT_CODE\"; "
+        f"  echo \"END_TIME: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
+        f"}} > {shlex.quote(temp_marker_path)} && mv {shlex.quote(temp_marker_path)} {shlex.quote(marker_path)}; "
+        f"exit $EXIT_CODE"
+    )
+
+
 def _build_pose3d_shell_command(
     source_name: str,
     output_dir: str,
@@ -107,12 +126,7 @@ def build_pose2d_pipeline_spec(
     
     # Append marker file writing for job completion detection.
     # WHAM_DATA_DIR is injected per backend and points at a mounted data root.
-    shell_command = (
-        f"({main_command}); "
-        f"EXIT_CODE=$?; "
-        f"mkdir -p \"${{WHAM_DATA_DIR}}\" && echo \"$EXIT_CODE $(date)\" > \"${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete\"; "
-        f"exit $EXIT_CODE"
-    )
+    shell_command = _build_logged_marker_shell_command(main_command, job_id)
     
     docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose2d-{job_id}", remove_on_exit=False)
     docker_cmd.extend([
@@ -155,12 +169,7 @@ def build_pose3d_pipeline_spec(
     
     # Append marker file writing for job completion detection.
     # WHAM_DATA_DIR is injected per backend and points at a mounted data root.
-    shell_command = (
-        f"({main_command}); "
-        f"EXIT_CODE=$?; "
-        f"mkdir -p \"${{WHAM_DATA_DIR}}\" && echo \"$EXIT_CODE $(date)\" > \"${{WHAM_DATA_DIR}}/.wham_job_{job_id}_complete\"; "
-        f"exit $EXIT_CODE"
-    )
+    shell_command = _build_logged_marker_shell_command(main_command, job_id)
     
     docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose3d-{job_id}", remove_on_exit=False)
     docker_cmd.extend([
