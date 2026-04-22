@@ -285,6 +285,29 @@ class RunpodExecutionStrategy(ExecutionStrategy):
                     exit_code=exit_code,
                     error_summary=f"Job {job_id} exited with code {exit_code}",
                 )
+
+            # If pod is removed/terminated (for example by cancellation), stop waiting.
+            status_result = get_runpod_pod_status(identifier, cwd=settings.repo_dir)
+            status_text = f"{status_result.stdout}\n{status_result.stderr}".strip()
+            normalized_state = _normalize_runpod_state(status_text)
+            if normalized_state == "missing":
+                return ExecutionCompletionResult(
+                    status_value=ApiJobStatus.failed,
+                    exit_code=137,
+                    error_summary=(status_result.stderr or status_result.stdout or f"Runpod pod {identifier} no longer exists").strip(),
+                )
+            if normalized_state == "failed":
+                return ExecutionCompletionResult(
+                    status_value=ApiJobStatus.failed,
+                    exit_code=status_result.returncode,
+                    error_summary=(status_result.stderr or status_result.stdout or f"Runpod pod {identifier} failed").strip(),
+                )
+            if normalized_state == "succeeded":
+                return ExecutionCompletionResult(
+                    status_value=ApiJobStatus.succeeded,
+                    exit_code=0,
+                    error_summary=None,
+                )
             
             time.sleep(max(settings.runpod_poll_interval_seconds, 1))
 
