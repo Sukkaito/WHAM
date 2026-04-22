@@ -52,7 +52,7 @@ def _build_logged_marker_shell_command(main_command: str, job_id: str) -> str:
         f"  echo '=== WHAM JOB LOG END ==='; "
         f"  echo \"EXIT_CODE: $EXIT_CODE\"; "
         f"  echo \"END_TIME: $(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
-        f"}} > {shlex.quote(temp_marker_path)} && mv {shlex.quote(temp_marker_path)} {shlex.quote(marker_path)}; "
+        f"}} > \"{temp_marker_path}\" && mv \"{temp_marker_path}\" \"{marker_path}\"; "
         f"exit $EXIT_CODE"
     )
 
