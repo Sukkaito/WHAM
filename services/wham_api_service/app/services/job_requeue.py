@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+import threading
 from typing import Any
 
 from app.core.logging import get_logger, log_event
@@ -14,6 +16,8 @@ from app.services.video_service import read_idx
 
 
 _logger = get_logger(__name__)
+_startup_requeue_backlog: deque[dict[str, Any]] = deque()
+_startup_requeue_lock = threading.Lock()
 
 
 def _next_unfinished_jobs() -> list[dict[str, Any]]:
@@ -136,9 +140,52 @@ def _reconcile_running_job(job: dict[str, Any]) -> bool:
     return False
 
 
+def _enqueue_startup_job(job: dict[str, Any]) -> bool:
+    job_id = job["job_id"]
+    status_value = job.get("status")
+
+    if status_value == ApiJobStatus.running.value:
+        if _reconcile_running_job(job):
+            enqueue_job(job_id)
+            log_event(_logger, "startup_requeue_running_job", job_id=job_id)
+            return True
+        return False
+
+    enqueue_job(job_id)
+    log_event(_logger, "startup_requeue_queued_job", job_id=job_id)
+    return True
+
+
+def _drain_startup_requeue_backlog(target_count: int) -> int:
+    requeued = 0
+
+    while requeued < target_count:
+        with _startup_requeue_lock:
+            if not _startup_requeue_backlog:
+                break
+            job = _startup_requeue_backlog.popleft()
+
+        if _enqueue_startup_job(job):
+            requeued += 1
+
+    return requeued
+
+
+def notify_startup_requeue_slot_available() -> None:
+    _drain_startup_requeue_backlog(1)
+
+
 def requeue_unfinished_jobs() -> None:
     jobs = _next_unfinished_jobs()
-    log_event(_logger, "startup_requeue_scan", unfinished_count=len(jobs), requeue_enabled=settings.requeue_jobs_on_startup)
+    worker_count = max(settings.job_worker_count, 1)
+    
+    log_event(
+        _logger,
+        "startup_requeue_scan",
+        unfinished_count=len(jobs),
+        requeue_enabled=settings.requeue_jobs_on_startup,
+        worker_count=worker_count,
+    )
     
     if not settings.requeue_jobs_on_startup:
         # Cancel all unfinished jobs if requeue is disabled
@@ -147,20 +194,26 @@ def requeue_unfinished_jobs() -> None:
             status_value = job.get("status")
             update_job_completion(
                 job_id=job_id,
-                status_value=ApiJobStatus.cancelled,
+                status_value=ApiJobStatus.failed,
                 error_summary="Job cancelled due to requeue being disabled on startup",
             )
             log_event(_logger, "startup_cancel_unfinished_job", job_id=job_id, status=status_value)
         return
-    
-    # Original requeue logic
-    for job in jobs:
-        job_id = job["job_id"]
-        status_value = job.get("status")
-        if status_value == ApiJobStatus.running.value:
-            if _reconcile_running_job(job):
-                enqueue_job(job_id)
-                log_event(_logger, "startup_requeue_running_job", job_id=job_id)
-            continue
-        enqueue_job(job_id)
-        log_event(_logger, "startup_requeue_queued_job", job_id=job_id)
+
+    # Requeue only as many jobs as there are workers, then refill one-for-one as workers free up.
+    running_jobs = [job for job in jobs if job.get("status") == ApiJobStatus.running.value]
+    queued_jobs = [job for job in jobs if job.get("status") == ApiJobStatus.queued.value]
+
+    with _startup_requeue_lock:
+        _startup_requeue_backlog.clear()
+        _startup_requeue_backlog.extend(running_jobs)
+        _startup_requeue_backlog.extend(queued_jobs)
+
+    initial_requeued = _drain_startup_requeue_backlog(worker_count)
+    log_event(
+        _logger,
+        "startup_requeue_initial_batch",
+        requeued_count=initial_requeued,
+        backlog_remaining=len(_startup_requeue_backlog),
+        worker_count=worker_count,
+    )

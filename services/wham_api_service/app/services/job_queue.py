@@ -19,6 +19,27 @@ _worker_started = False
 _logger = get_logger(__name__)
 
 
+def _schedule_requeue(job_id: str, delay_seconds: int) -> None:
+    """Schedule a safe requeue that tolerates dedupe races with active workers."""
+
+    def _attempt_enqueue() -> None:
+        if _is_job_terminal(job_id):
+            return
+
+        with _queue_lock:
+            if job_id in _enqueued_job_ids:
+                retry_timer = threading.Timer(1, _attempt_enqueue)
+                retry_timer.daemon = True
+                retry_timer.start()
+                return
+
+        enqueue_job(job_id)
+
+    timer = threading.Timer(delay_seconds, _attempt_enqueue)
+    timer.daemon = True
+    timer.start()
+
+
 def _is_job_terminal(job_id: str) -> bool:
     row = _get_job_record_for_worker(job_id)
     if row is None:
@@ -185,9 +206,7 @@ def _run_job_worker_cycle(job_id: str) -> None:
             seconds_until_window=wait_seconds,
             retry_delay_seconds=retry_delay_seconds,
         )
-        timer = threading.Timer(retry_delay_seconds, enqueue_job, args=(job_id,))
-        timer.daemon = True
-        timer.start()
+        _schedule_requeue(job_id, retry_delay_seconds)
         return
 
     if _is_job_terminal(job_id):
@@ -295,6 +314,12 @@ def start_job_worker(worker_count: int = 1) -> None:
                 with _queue_lock:
                     _enqueued_job_ids.discard(job_id)
                 _job_queue.task_done()
+                try:
+                    from .job_requeue import notify_startup_requeue_slot_available
+
+                    notify_startup_requeue_slot_available()
+                except Exception:
+                    pass
 
     for idx in range(count):
         thread = threading.Thread(target=_worker, name=f"wham-job-worker-{idx}", daemon=True)
