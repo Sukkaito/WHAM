@@ -57,7 +57,7 @@ def submit_pose2d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
     }
 
     cmd_spec = build_pose2d_pipeline_spec(
-        source_name=src["stored_filename"],
+        source_name=src.stored_filename,
         job_id=job_id,
         result_name=result_name,
         gpu_id=gpu_id,

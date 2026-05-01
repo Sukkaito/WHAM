@@ -61,7 +61,7 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
     }
 
     cmd_spec = build_pose3d_pipeline_spec(
-        source_name=src["stored_filename"],
+        source_name=src.stored_filename,
         job_id=job_id,
         output_dir=output_dir,
         gpu_id=gpu_id,
