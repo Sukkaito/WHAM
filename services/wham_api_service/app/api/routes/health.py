@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request, status
 import logging
+
+from fastapi import APIRouter, status
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

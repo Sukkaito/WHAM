@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from app.api.router import api_router
+from app.api.exception_handlers import register_exception_handlers
 from app.core.auth import AuthMiddleware
 from app.core.logging import get_logger, log_event, setup_logging
 from app.core.settings import settings
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
         swagger_ui_parameters={"persistAuthorization": True},
     )
     app.add_middleware(AuthMiddleware)
+    register_exception_handlers(app)
 
     @app.on_event("startup")
     async def _startup() -> None:

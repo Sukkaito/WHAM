@@ -32,16 +32,7 @@ def submit_pose2d_job(request: Request, payload: PoseJobSubmitRequest) -> PoseJo
     """Phase 2 step 3: launch pose2d GPU Docker job and persist lineage."""
     auth = get_request_auth(request)
     logger.info("submit_pose2d_job source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
-    try:
-        return submit_pose2d(payload, auth)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("submit_pose2d_job failed source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="pose2d submission failed",
-        )
+    return submit_pose2d(payload, auth)
 
 
 @router.post("/pose3d/jobs", response_model=PoseJobAcceptedResponse)
@@ -49,32 +40,14 @@ def submit_pose3d_job(request: Request, payload: PoseJobSubmitRequest) -> PoseJo
     """Phase 2 step 4: launch pose3d GPU Docker job with preprocessing reuse when available."""
     auth = get_request_auth(request)
     logger.info("submit_pose3d_job source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
-    try:
-        return submit_pose3d(payload, auth)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("submit_pose3d_job failed source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="pose3d submission failed",
-        )
+    return submit_pose3d(payload, auth)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 def get_job_status(job_id: str) -> JobStatusResponse:
     """Return durable job lifecycle state from PostgreSQL."""
     logger.info("get_job_status job_id=%s", job_id)
-    try:
-        return load_job_status(job_id)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("get_job_status failed job_id=%s", job_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="job lookup failed",
-        )
+    return load_job_status(job_id)
 
 
 @router.get("/jobs", response_model=JobListResponse)
@@ -101,25 +74,16 @@ def list_jobs(
         limit,
         offset,
     )
-    try:
-        return load_jobs(
-            auth=auth,
-            status_filter=status_filter,
-            job_type_filter=job_type_filter,
-            source_video_id=source_video_id,
-            result_video_id=result_video_id,
-            execution_backend=execution_backend,
-            limit=limit,
-            offset=offset,
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("list_jobs failed subject=%s", auth.subject)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="job list failed",
-        )
+    return load_jobs(
+        auth=auth,
+        status_filter=status_filter,
+        job_type_filter=job_type_filter,
+        source_video_id=source_video_id,
+        result_video_id=result_video_id,
+        execution_backend=execution_backend,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobStatusResponse)
@@ -127,16 +91,7 @@ def cancel_job(request: Request, job_id: str) -> JobStatusResponse:
     """Cancel a queued or running job and persist terminal state."""
     auth = get_request_auth(request)
     logger.info("cancel_job job_id=%s subject=%s", job_id, auth.subject)
-    try:
-        return cancel_job_service(job_id=job_id, auth=auth)
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("cancel_job failed job_id=%s subject=%s", job_id, auth.subject)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="job cancellation failed",
-        )
+    return cancel_job_service(job_id=job_id, auth=auth)
 
 
 @router.get("/jobs/{job_id}/artifacts/download")
@@ -144,19 +99,10 @@ def download_job_artifacts(request: Request, job_id: str):
     """Download a zip archive of the source video and derived artifacts for a job."""
     auth = get_request_auth(request)
     logger.info("download_job_artifacts job_id=%s subject=%s", job_id, auth.subject)
-    try:
-        archive_path = build_job_artifacts_archive(job_id=job_id, auth=auth)
-        return FileResponse(
-            path=archive_path,
-            media_type="application/zip",
-            filename=f"{job_id}__associated_artifacts.zip",
-            background=BackgroundTask(lambda: archive_path.unlink(missing_ok=True)),
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("download_job_artifacts failed job_id=%s subject=%s", job_id, auth.subject)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="job artifacts download failed",
-        )
+    archive_path = build_job_artifacts_archive(job_id=job_id, auth=auth)
+    return FileResponse(
+        path=archive_path,
+        media_type="application/zip",
+        filename=f"{job_id}__associated_artifacts.zip",
+        background=BackgroundTask(lambda: archive_path.unlink(missing_ok=True)),
+    )

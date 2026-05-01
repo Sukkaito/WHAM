@@ -12,7 +12,6 @@ from app.models.schemas import JobStatus as ApiJobStatus
 from app.services.execution_strategy import get_execution_strategy
 from app.services.job_queue import enqueue_job
 from app.services.job_service import _database_ready, update_job_completion
-from app.services.video_service import read_idx
 
 
 _logger = get_logger(__name__)
@@ -22,54 +21,33 @@ _startup_requeue_lock = threading.Lock()
 
 def _next_unfinished_jobs() -> list[dict[str, Any]]:
     database_ready = _database_ready()
-    if database_ready:
-        with session_scope() as session:
-            rows = (
-                session.query(JobRecord)
-                .filter(JobRecord.status.in_([DbJobStatus.queued, DbJobStatus.running]))
-                .all()
-            )
-            out: list[dict[str, Any]] = []
-            for job in rows:
-                runtime_params = job.runtime_params or {}
-                if not isinstance(runtime_params, dict):
-                    runtime_params = {}
-                out.append(
-                    {
-                        "job_id": job.job_id,
-                        "status": job.status.value,
-                        "runtime_params": runtime_params,
-                        "execution_backend": job.execution_backend or runtime_params.get("execution_backend"),
-                        "identifier": job.pod_id
-                        or runtime_params.get("pod_id")
-                        or job.container_name
-                        or runtime_params.get("container_name"),
-                    }
-                )
-            return out
+    if not database_ready:
+        return []
 
-    idx = read_idx()
-    out: list[dict[str, Any]] = []
-    for job_id, row in idx.get("jobs", {}).items():
-        row = row or {}
-        status_value = (row or {}).get("status")
-        if status_value in {ApiJobStatus.queued.value, ApiJobStatus.running.value}:
-            runtime_params = row.get("runtime_params") or {}
+    with session_scope() as session:
+        rows = (
+            session.query(JobRecord)
+            .filter(JobRecord.status.in_([DbJobStatus.queued, DbJobStatus.running]))
+            .all()
+        )
+        out: list[dict[str, Any]] = []
+        for job in rows:
+            runtime_params = job.runtime_params or {}
             if not isinstance(runtime_params, dict):
                 runtime_params = {}
             out.append(
                 {
-                    "job_id": job_id,
-                    "status": status_value,
+                    "job_id": job.job_id,
+                    "status": job.status.value,
                     "runtime_params": runtime_params,
-                    "execution_backend": row.get("execution_backend") or runtime_params.get("execution_backend"),
-                    "identifier": row.get("pod_id")
+                    "execution_backend": job.execution_backend or runtime_params.get("execution_backend"),
+                    "identifier": job.pod_id
                     or runtime_params.get("pod_id")
-                    or row.get("container_name")
+                    or job.container_name
                     or runtime_params.get("container_name"),
                 }
             )
-    return out
+        return out
 
 
 def _reconcile_running_job(job: dict[str, Any]) -> bool:

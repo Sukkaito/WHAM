@@ -98,12 +98,10 @@ def build_runpod_pod_create_cmd(
 
     if network_volume_id:
         cmd.extend(["--network-volume-id", network_volume_id])
-    # if volume_mount_path:
-    #     cmd.extend(["--volume-mount-path", volume_mount_path])
 
-    # Build runtime environment for Runpod pod.
-    # Note: GPU allocation is handled by runpodctl --gpu-id flag, not by CUDA_VISIBLE_DEVICES.
-    # Only include custom env vars passed via the env parameter.
+    if volume_mount_path:
+        cmd.extend(["--volume-mount-path", volume_mount_path])
+
     if len(entrypoint_cmd) == 1:
         run_command = str(entrypoint_cmd[0])
     elif len(entrypoint_cmd) >= 3 and entrypoint_cmd[0] == "bash" and entrypoint_cmd[1] == "-lc":
@@ -117,9 +115,6 @@ def build_runpod_pod_create_cmd(
     if env:
         runtime_env.update(env)
 
-    # for key, value in runtime_env.items():
-    #     cmd.extend(["--env", f"{key}={value}"])
-        
     env_payload = json.dumps(runtime_env)
     cmd.extend(["--env", env_payload])
 

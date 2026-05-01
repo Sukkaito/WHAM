@@ -1,4 +1,3 @@
-import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -8,6 +7,9 @@ from typing import Any
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.settings import settings
+from app.db.models import Base, JobRecord, VideoRecord
+from app.db.session import get_engine, session_scope
+from app.models.lineage import DerivedVideoAssociationDTO, VideoFileDTO, VideoRecordDTO
 from app.models.schemas import (
     AuthPayload,
     DerivedVideoAssociation,
@@ -21,6 +23,18 @@ _CHUNK_SIZE = 1024 * 1024
 _SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def _database_ready() -> bool:
+    if not settings.database_url:
+        return False
+
+    engine = get_engine()
+    if engine is None:
+        return False
+
+    Base.metadata.create_all(bind=engine)
+    return True
+
+
 def _sanitize_filename(filename: str) -> str:
     base = Path(filename).name.strip()
     if not base:
@@ -31,27 +45,82 @@ def _sanitize_filename(filename: str) -> str:
     return _SAFE_FILENAME_PATTERN.sub("_", base)
 
 
-def _load_index(index_file: Path) -> dict[str, Any]:
-    if not index_file.exists():
-        return {"videos": {}}
-    with index_file.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def _video_record_to_dto(record: VideoRecord) -> VideoRecordDTO:
+    return VideoRecordDTO(
+        video_id=record.video_id,
+        source_filename=record.filename,
+        stored_filename=record.stored_filename,
+        storage_path=record.storage_path,
+        content_type=record.content_type,
+        size_bytes=record.size_bytes,
+        uploaded_by=record.uploaded_by,
+        created_at=record.created_at,
+        kind=record.kind,
+        status=record.status,
+        source_video_id=record.source_video_id,
+        transform_type=record.transform_type,
+    )
 
 
-def _persist_index(index_file: Path, data: dict[str, Any]) -> None:
-    index_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_file = index_file.with_suffix(index_file.suffix + ".tmp")
-    with tmp_file.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-    tmp_file.replace(index_file)
+def upsert_video_record(
+    *,
+    video_id: str,
+    source_filename: str,
+    stored_filename: str,
+    storage_path: str,
+    content_type: str | None,
+    uploaded_by: str | None,
+    size_bytes: int | None,
+    kind: str,
+    status: str,
+    source_video_id: str | None = None,
+    transform_type: str | None = None,
+) -> None:
+    if not _database_ready():
+        return
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        record = session.get(VideoRecord, video_id)
+        if record is None:
+            record = VideoRecord(
+                video_id=video_id,
+                filename=source_filename,
+                stored_filename=stored_filename,
+                kind=kind,
+                status=status,
+                storage_path=storage_path,
+                content_type=content_type,
+                uploaded_by=uploaded_by,
+                size_bytes=size_bytes,
+                source_video_id=source_video_id,
+                transform_type=transform_type,
+                created_at=now,
+            )
+            session.add(record)
+            return
+
+        record.filename = source_filename
+        record.stored_filename = stored_filename
+        record.kind = kind
+        record.status = status
+        record.storage_path = storage_path
+        record.content_type = content_type
+        record.uploaded_by = uploaded_by
+        record.size_bytes = size_bytes
+        record.source_video_id = source_video_id
+        record.transform_type = transform_type
 
 
-def read_idx() -> dict[str, Any]:
-    return _load_index(settings.video_index_file)
+def load_video_record(video_id: str) -> VideoRecordDTO | None:
+    if _database_ready():
+        with session_scope() as session:
+            record = session.get(VideoRecord, video_id)
+            if record is None:
+                return None
+            return _video_record_to_dto(record)
 
-
-def write_idx(data: dict[str, Any]) -> None:
-    _persist_index(settings.video_index_file, data)
+    return None
 
 
 def _validate_video_upload(file: UploadFile, safe_filename: str) -> None:
@@ -69,8 +138,8 @@ def _validate_video_upload(file: UploadFile, safe_filename: str) -> None:
         )
 
 
-def _authorize_download(record: dict[str, Any], auth: AuthPayload) -> None:
-    owner_subject = record.get("uploaded_by")
+def _authorize_download(record: VideoRecordDTO, auth: AuthPayload) -> None:
+    owner_subject = record.uploaded_by
 
     # Temporary auth policy until external auth integration is added.
     if auth.subject != owner_subject:
@@ -108,28 +177,28 @@ async def store_video(file: UploadFile, auth: AuthPayload) -> UploadVideoRespons
             detail="Uploaded video is empty.",
         )
 
-    index_data = read_idx()
-    index_data.setdefault("videos", {})[video_id] = {
-        "video_id": video_id,
-        "source_filename": safe_filename,
-        "stored_filename": stored_filename,
-        "storage_path": str(target_path),
-        "content_type": file.content_type,
-        "size_bytes": bytes_written,
-        "uploaded_by": auth.subject,
-        "uploaded_api_key": auth.api_key,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "kind": "source",
-        "status": "stored",
-    }
-    write_idx(index_data)
+    upsert_video_record(
+        video_id=video_id,
+        source_filename=safe_filename,
+        stored_filename=stored_filename,
+        storage_path=str(target_path),
+        content_type=file.content_type,
+        uploaded_by=auth.subject,
+        size_bytes=bytes_written,
+        kind="source",
+        status="stored",
+    )
+    if not _database_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is required for video storage.",
+        )
 
     return UploadVideoResponse(video_id=video_id, filename=safe_filename, status="stored")
 
 
-def get_video(video_id: str, auth: AuthPayload) -> dict[str, Any]:
-    index_data = read_idx()
-    record = index_data.get("videos", {}).get(video_id)
+def get_video(video_id: str, auth: AuthPayload) -> VideoFileDTO:
+    record = load_video_record(video_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -138,38 +207,67 @@ def get_video(video_id: str, auth: AuthPayload) -> dict[str, Any]:
 
     _authorize_download(record, auth)
 
-    storage_path = Path(record.get("storage_path", ""))
+    storage_path = Path(record.storage_path)
     if not storage_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Stored file missing for video_id={video_id}",
         )
 
-    return {
-        "video_id": video_id,
-        "storage_path": storage_path,
-        "stored_filename": record.get("stored_filename") or storage_path.name,
-        "source_filename": record.get("source_filename") or storage_path.name,
-        "content_type": record.get("content_type") or "application/octet-stream",
-    }
+    return VideoFileDTO(
+        video_id=video_id,
+        storage_path=str(storage_path),
+        stored_filename=record.stored_filename or storage_path.name,
+        source_filename=record.source_filename or storage_path.name,
+        content_type=record.content_type or "application/octet-stream",
+    )
 
 
-def list_assoc(source_video_id: str) -> VideoAssociationsResponse:
-    index_data = read_idx()
-    rows = index_data.get("associations", {}).get(source_video_id, [])
+def list_assoc(source_video_id: str, auth: AuthPayload) -> VideoAssociationsResponse:
+    source_record = load_video_record(source_video_id)
+    if source_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Video not found for video_id={source_video_id}",
+        )
+
+    if auth.subject != source_record.uploaded_by:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Download not authorized for this video.",
+        )
+
+    rows: list[DerivedVideoAssociationDTO] = []
+    if _database_ready():
+        with session_scope() as session:
+            jobs = (
+                session.query(JobRecord)
+                .filter(JobRecord.source_video_id == source_video_id)
+                .order_by(JobRecord.created_at.desc())
+                .all()
+            )
+            for job in jobs:
+                if job.result_video_id and job.transform_type and job.status:
+                    rows.append(
+                        DerivedVideoAssociationDTO(
+                            result_video_id=job.result_video_id,
+                            transform_type=job.transform_type.value,
+                            job_id=job.job_id,
+                            status=job.status.value,
+                        )
+                    )
+    else:
+        return VideoAssociationsResponse(source_video_id=source_video_id, derived_videos=[])
+
     items = []
     for row in rows:
-        try:
-            items.append(
-                DerivedVideoAssociation(
-                    result_video_id=row["result_video_id"],
-                    transform_type=TransformType(row["transform_type"]),
-                    job_id=row["job_id"],
-                    status=JobStatus(row["status"]),
-                )
+        items.append(
+            DerivedVideoAssociation(
+                result_video_id=row.result_video_id,
+                transform_type=TransformType(row.transform_type),
+                job_id=row.job_id,
+                status=JobStatus(row.status),
             )
-        except Exception:
-            # Skip malformed rows until strict schema persistence is added.
-            continue
+        )
 
     return VideoAssociationsResponse(source_video_id=source_video_id, derived_videos=items)

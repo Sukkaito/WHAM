@@ -29,7 +29,7 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
     calib = None
     pod_name = f"wham-pose3d-{job_id}"
 
-    stem = Path(src["stored_filename"]).stem
+    stem = Path(src.stored_filename).stem
     output_pth = f"output/pose3d/{job_id}"
     output_dir = f"{output_pth}/{stem}"
     result_storage_path = settings.wham_data_dir / output_dir / result_name
@@ -42,9 +42,9 @@ def submit_pose3d(payload: PoseJobSubmitRequest, auth: AuthPayload) -> PoseJobAc
         "pod_name": pod_name,
         "execution_backend": settings.execution_backend,
         "gpu_id": gpu_id,
-        "video": f"/videos/{src['stored_filename']}",
-        "source_filename": src["stored_filename"],
-        "source_video_path": str(src["storage_path"]),
+        "video": f"/videos/{src.stored_filename}",
+        "source_filename": src.stored_filename,
+        "source_video_path": str(src.storage_path),
         "output_pth": output_pth,
         "output_dir": output_dir,
         "result_filename": result_name,

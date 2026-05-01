@@ -51,46 +51,30 @@ def _get_job_record_for_worker(job_id: str) -> dict[str, Any] | None:
     from app.db.models import JobRecord
     from app.db.session import session_scope
     from .job_service import _database_ready
-    from .video_service import read_idx
 
     database_ready = _database_ready()
 
-    if database_ready:
-        with session_scope() as session:
-            job = session.get(JobRecord, job_id)
-            if job is None:
-                return None
-
-            runtime_params = job.runtime_params or {}
-            if not isinstance(runtime_params, dict):
-                runtime_params = {}
-
-            return {
-                "job_id": job.job_id,
-                "status": job.status.value,
-                "container_name": job.container_name or runtime_params.get("container_name"),
-                "pod_id": getattr(job, "pod_id", None) or runtime_params.get("pod_id"),
-                "pod_name": getattr(job, "pod_name", None) or runtime_params.get("pod_name"),
-                "execution_backend": getattr(job, "execution_backend", None) or runtime_params.get("execution_backend"),
-                "runtime_params": runtime_params,
-            }
-
-    idx = read_idx()
-    row = idx.get("jobs", {}).get(job_id)
-    if row is None:
+    if not database_ready:
         return None
-    runtime_params = row.get("runtime_params") or {}
-    if not isinstance(runtime_params, dict):
-        runtime_params = {}
-    return {
-        "job_id": row.get("job_id", job_id),
-        "status": row.get("status", ApiJobStatus.queued.value),
-        "container_name": row.get("container_name") or runtime_params.get("container_name"),
-        "pod_id": row.get("pod_id") or runtime_params.get("pod_id"),
-        "pod_name": row.get("pod_name") or runtime_params.get("pod_name"),
-        "execution_backend": row.get("execution_backend") or runtime_params.get("execution_backend"),
-        "runtime_params": runtime_params,
-    }
+
+    with session_scope() as session:
+        job = session.get(JobRecord, job_id)
+        if job is None:
+            return None
+
+        runtime_params = job.runtime_params or {}
+        if not isinstance(runtime_params, dict):
+            runtime_params = {}
+
+        return {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "container_name": job.container_name or runtime_params.get("container_name"),
+            "pod_id": getattr(job, "pod_id", None) or runtime_params.get("pod_id"),
+            "pod_name": getattr(job, "pod_name", None) or runtime_params.get("pod_name"),
+            "execution_backend": getattr(job, "execution_backend", None) or runtime_params.get("execution_backend"),
+            "runtime_params": runtime_params,
+        }
 
 
 def _run_job_worker_cycle(job_id: str) -> None:

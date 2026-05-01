@@ -10,12 +10,13 @@ from fastapi import HTTPException, status
 
 from app.core.logging import get_logger, log_event
 from app.core.settings import settings
-from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType
+from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType, VideoRecord
 from app.db.session import get_engine, session_scope
+from app.models.lineage import VideoRecordDTO
 from app.models.schemas import AuthPayload, JobListResponse, JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
 from .execution_strategy import get_execution_strategy
-from .video_service import read_idx, write_idx
+from .video_service import load_video_record, upsert_video_record
 
 _logger = get_logger(__name__)
 
@@ -58,88 +59,11 @@ def _to_api_status(status_value: DbJobStatus) -> ApiJobStatus:
 
 
 
-def _touch_json_index(
-    *,
-    job_id: str,
-    source_video_id: str,
-    result_video_id: str,
-    transform_type: TransformType,
-    status_value: str,
-    result_storage_path: str,
-    result_filename: str,
-    source_filename: str,
-    tracking_results_path: str | None,
-    slam_results_path: str | None,
-    runtime_params: dict[str, Any],
-    pod_id: str | None = None,
-    pod_name: str | None = None,
-    execution_backend: str | None = None,
-    error_summary: str | None = None,
-    exit_code: int | None = None,
-) -> None:
-    idx = read_idx()
-    videos = idx.setdefault("videos", {})
-    jobs = idx.setdefault("jobs", {})
-    assoc = idx.setdefault("associations", {})
-
-    if result_video_id not in videos:
-        videos[result_video_id] = {
-            "video_id": result_video_id,
-            "source_filename": result_filename,
-            "stored_filename": result_filename,
-            "storage_path": result_storage_path,
-            "content_type": "video/mp4",
-            "uploaded_by": runtime_params.get("auth_subject"),
-            "uploaded_api_key": runtime_params.get("auth_api_key"),
-            "created_at": _now().isoformat(),
-            "kind": "derived",
-            "status": status_value,
-            "transform_type": transform_type.value,
-            "source_video_id": source_video_id,
-            "tracking_results_path": tracking_results_path,
-            "slam_results_path": slam_results_path,
-        }
-    else:
-        videos[result_video_id]["status"] = status_value
-        videos[result_video_id]["storage_path"] = result_storage_path
-        videos[result_video_id]["stored_filename"] = result_filename
-
-    jobs[job_id] = {
-        "job_id": job_id,
-        "job_name": runtime_params["job_name"],
-        "transform_type": transform_type.value,
-        "source_video_id": source_video_id,
-        "result_video_id": result_video_id,
-        "status": status_value,
-        "container_name": runtime_params.get("container_name"),
-        "pod_id": pod_id or runtime_params.get("pod_id"),
-        "pod_name": pod_name or runtime_params.get("pod_name"),
-        "execution_backend": execution_backend or runtime_params.get("execution_backend"),
-        "created_at": runtime_params.get("created_at") or _now().isoformat(),
-        "updated_at": _now().isoformat(),
-        "tracking_results_path": tracking_results_path,
-        "slam_results_path": slam_results_path,
-        "runtime_params": runtime_params,
-        "error_summary": error_summary,
-        "exit_code": exit_code,
-    }
-
-    rows = assoc.setdefault(source_video_id, [])
-    for row in rows:
-        if row.get("job_id") == job_id:
-            row["status"] = status_value
-            break
-    else:
-        rows.append(
-            {
-                "result_video_id": result_video_id,
-                "transform_type": transform_type.value,
-                "job_id": job_id,
-                "status": status_value,
-            }
-        )
-
-    write_idx(idx)
+def _get_source_video_owner(source_video_id: str) -> str | None:
+    source_record = load_video_record(source_video_id)
+    if source_record is None:
+        return None
+    return source_record.uploaded_by
 
 
 def register_job_submission(
@@ -156,6 +80,11 @@ def register_job_submission(
     runtime_params: dict[str, Any],
 ) -> None:
     database_ready = _database_ready()
+    if not database_ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is required for job submission.",
+        )
 
     now = _now()
     db_runtime_params = dict(runtime_params)
@@ -166,47 +95,42 @@ def register_job_submission(
     db_runtime_params.setdefault("slam_results_path", slam_results_path)
     db_runtime_params.setdefault("execution_backend", runtime_params.get("execution_backend", settings.execution_backend))
 
-    if database_ready:
-        with session_scope() as session:
-            pod_id = runtime_params.get("pod_id")
-            pod_name = runtime_params.get("pod_name")
-            execution_backend = runtime_params.get("execution_backend") or settings.execution_backend
-            session.add(
-                JobRecord(
-                    job_id=job_id,
-                    job_name=job_name,
-                    transform_type=DbTransformType(transform_type.value),
-                    source_video_id=source_video_id,
-                    result_video_id=result_video_id,
-                    status=DbJobStatus.queued,
-                    container_name=runtime_params.get("container_name"),
-                    pod_id=pod_id,
-                    pod_name=pod_name,
-                    execution_backend=execution_backend,
-                    exit_code=None,
-                    error_summary=None,
-                    runtime_params=db_runtime_params,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+    from .job_utils import create_job_record_kwargs
 
-    _touch_json_index(
-        job_id=job_id,
+    with session_scope() as session:
+        pod_id = runtime_params.get("pod_id")
+        pod_name = runtime_params.get("pod_name")
+        execution_backend = runtime_params.get("execution_backend") or settings.execution_backend
+        kwargs = create_job_record_kwargs(
+            job_id=job_id,
+            job_name=job_name,
+            transform_type=transform_type.value,
+            source_video_id=source_video_id,
+            result_video_id=result_video_id,
+            container_name=runtime_params.get("container_name"),
+            pod_id=pod_id,
+            pod_name=pod_name,
+            execution_backend=execution_backend,
+            runtime_params=db_runtime_params,
+            now=now,
+        )
+        session.add(JobRecord(**kwargs))
+
+    upsert_video_record(
+        video_id=result_video_id,
+        source_filename=result_filename,
+        stored_filename=result_filename,
+        storage_path=result_storage_path,
+        content_type="video/mp4",
+        uploaded_by=runtime_params.get("auth_subject"),
+        size_bytes=None,
+        kind="derived",
+        status=ApiJobStatus.queued.value,
         source_video_id=source_video_id,
-        result_video_id=result_video_id,
-        transform_type=transform_type,
-        status_value=ApiJobStatus.queued.value,
-        result_storage_path=result_storage_path,
-        result_filename=result_filename,
-        source_filename=runtime_params.get("source_filename", result_filename),
-        tracking_results_path=tracking_results_path,
-        slam_results_path=slam_results_path,
-        runtime_params=runtime_params,
-        pod_id=runtime_params.get("pod_id"),
-        pod_name=runtime_params.get("pod_name"),
-        execution_backend=runtime_params.get("execution_backend"),
+        transform_type=transform_type.value,
     )
+
+
 
 
 def update_job_runtime_metadata(job_id: str, updates: dict[str, Any]) -> None:
@@ -237,25 +161,7 @@ def update_job_runtime_metadata(job_id: str, updates: dict[str, Any]) -> None:
                 job.execution_backend = normalized_updates.get("execution_backend")
             job.updated_at = _now()
 
-    idx = read_idx()
-    jobs = idx.setdefault("jobs", {})
-    job_row = jobs.get(job_id)
-    if job_row is not None:
-        runtime_params = job_row.get("runtime_params") or {}
-        if not isinstance(runtime_params, dict):
-            runtime_params = {}
-        runtime_params.update(normalized_updates)
-        job_row["runtime_params"] = runtime_params
-        if "container_name" in normalized_updates:
-            job_row["container_name"] = normalized_updates.get("container_name")
-        if "pod_id" in normalized_updates:
-            job_row["pod_id"] = normalized_updates.get("pod_id")
-        if "pod_name" in normalized_updates:
-            job_row["pod_name"] = normalized_updates.get("pod_name")
-        if "execution_backend" in normalized_updates:
-            job_row["execution_backend"] = normalized_updates.get("execution_backend")
-        job_row["updated_at"] = _now().isoformat()
-        write_idx(idx)
+    return
 
 
 def mark_job_running(job_id: str) -> None:
@@ -275,8 +181,12 @@ def mark_job_running(job_id: str) -> None:
 
             job.status = DbJobStatus.running
             job.updated_at = _now()
+            if job.result_video_id:
+                video = session.get(VideoRecord, job.result_video_id)
+                if video is not None:
+                    video.status = ApiJobStatus.running.value
 
-    _sync_json_status(job_id, ApiJobStatus.running.value)
+    return
 
 
 def update_job_completion(
@@ -310,46 +220,12 @@ def update_job_completion(
             runtime_params["error_summary"] = normalized_error_summary
             job.runtime_params = runtime_params
 
-    _sync_json_status(job_id, status_value.value, exit_code=exit_code, error_summary=normalized_error_summary)
+            if job.result_video_id:
+                video = session.get(VideoRecord, job.result_video_id)
+                if video is not None:
+                    video.status = status_value.value
 
-
-def _sync_json_status(
-    job_id: str,
-    status_value: str,
-    *,
-    exit_code: int | None = None,
-    error_summary: str | None = None,
-) -> None:
-    error_summary = _truncate_error_summary(error_summary)
-    idx = read_idx()
-    jobs = idx.setdefault("jobs", {})
-    assoc = idx.setdefault("associations", {})
-    videos = idx.setdefault("videos", {})
-
-    job_row = jobs.get(job_id)
-    if job_row is None:
-        write_idx(idx)
-        return
-
-    job_row["status"] = status_value
-    job_row["updated_at"] = _now().isoformat()
-    job_row["exit_code"] = exit_code
-    job_row["error_summary"] = error_summary
-
-    result_video_id = job_row.get("result_video_id")
-    if result_video_id and result_video_id in videos:
-        videos[result_video_id]["status"] = status_value
-        if error_summary is not None:
-            videos[result_video_id]["error_summary"] = error_summary
-
-    source_video_id = job_row.get("source_video_id")
-    if source_video_id in assoc:
-        for row in assoc[source_video_id]:
-            if row.get("job_id") == job_id:
-                row["status"] = status_value
-                break
-
-    write_idx(idx)
+    return
 
 
 def _job_to_response(job: JobRecord) -> JobStatusResponse:
@@ -371,30 +247,6 @@ def _job_to_response(job: JobRecord) -> JobStatusResponse:
         error_summary=job.error_summary,
         created_at=job.created_at,
         updated_at=job.updated_at,
-    )
-
-
-def _job_response_from_json(job_row: dict[str, Any]) -> JobStatusResponse:
-    runtime_params = job_row.get("runtime_params") or {}
-    if not isinstance(runtime_params, dict):
-        runtime_params = {}
-    transform_value = job_row.get("transform_type")
-    status_value = job_row.get("status") or ApiJobStatus.queued.value
-    return JobStatusResponse(
-        job_id=job_row["job_id"],
-        job_name=job_row.get("job_name", f"job-{job_row['job_id']}"),
-        transform_type=TransformType(transform_value) if transform_value else None,
-        source_video_id=job_row.get("source_video_id"),
-        result_video_id=job_row.get("result_video_id"),
-        status=ApiJobStatus(status_value),
-        container_name=job_row.get("container_name") or runtime_params.get("container_name"),
-        pod_id=job_row.get("pod_id") or runtime_params.get("pod_id"),
-        pod_name=job_row.get("pod_name") or runtime_params.get("pod_name"),
-        execution_backend=job_row.get("execution_backend") or runtime_params.get("execution_backend"),
-        exit_code=job_row.get("exit_code"),
-        error_summary=job_row.get("error_summary"),
-        created_at=None,
-        updated_at=None,
     )
 
 
@@ -454,39 +306,10 @@ def get_job_status(job_id: str) -> JobStatusResponse:
 
             return _job_to_response(job)
 
-    idx = read_idx()
-    job_row = idx.get("jobs", {}).get(job_id)
-    if job_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found for job_id={job_id}",
-        )
-
-    if job_row.get("status") == ApiJobStatus.running.value:
-        runtime_params = job_row.get("runtime_params") or {}
-        if not isinstance(runtime_params, dict):
-            runtime_params = {}
-        strategy = get_execution_strategy(job_row.get("execution_backend") or runtime_params.get("execution_backend") or settings.execution_backend)
-        identifier = job_row.get("pod_id") or runtime_params.get("pod_id") or job_row.get("container_name") or runtime_params.get("container_name")
-        if identifier:
-            inspection = strategy.inspect(identifier, runtime_params)
-            if inspection.state != "running":
-                update_job_completion(
-                    job_id=job_id,
-                    status_value=ApiJobStatus.succeeded if inspection.state == "succeeded" else ApiJobStatus.failed,
-                    exit_code=inspection.exit_code,
-                    error_summary=inspection.error_summary,
-                )
-                strategy.cleanup(identifier)
-                idx = read_idx()
-                job_row = idx.get("jobs", {}).get(job_id)
-                if job_row is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Job not found for job_id={job_id}",
-                    )
-
-    return _job_response_from_json(job_row)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database is required for job status lookup.",
+    )
 
 
 def list_jobs(
@@ -503,16 +326,11 @@ def list_jobs(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    idx = read_idx()
-    videos = idx.get("videos", {})
-
     def _authorized_source(video_id: str | None) -> bool:
         if not video_id:
             return False
-        source_record = videos.get(video_id)
-        if source_record is None:
-            return False
-        return source_record.get("uploaded_by") == auth.subject
+        owner_subject = _get_source_video_owner(video_id)
+        return owner_subject == auth.subject
 
     def _matches_filters(row: dict[str, Any]) -> bool:
         row_status = row.get("status")
@@ -578,16 +396,10 @@ def list_jobs(
                 if _matches_filters(row):
                     rows.append(row)
     else:
-        json_jobs = idx.get("jobs", {})
-        for _, row in json_jobs.items():
-            row = row or {}
-            if _matches_filters(row):
-                rows.append(row)
-
-        def _sort_key(row: dict[str, Any]) -> str:
-            return str(row.get("created_at") or row.get("updated_at") or "")
-
-        rows.sort(key=_sort_key, reverse=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is required for job listing.",
+        )
 
     total = len(rows)
     page_rows = rows[offset : offset + limit]
@@ -617,7 +429,10 @@ def list_jobs(
                 )
             )
         else:
-            jobs.append(_job_response_from_json(row))
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database is required for job listing.",
+            )
 
     return JobListResponse(jobs=jobs, total=total, limit=limit, offset=offset)
 
@@ -634,14 +449,13 @@ def cancel_job(job_id: str, auth: AuthPayload) -> JobStatusResponse:
                     detail=f"Job not found for job_id={job_id}",
                 )
 
-            idx = read_idx()
-            source_record = idx.get("videos", {}).get(job.source_video_id)
-            if source_record is None:
+            owner_subject = _get_source_video_owner(job.source_video_id)
+            if owner_subject is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Source video not found for job_id={job_id}",
                 )
-            if auth.subject != source_record.get("uploaded_by"):
+            if auth.subject != owner_subject:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Cancel not authorized for this job.",
@@ -687,62 +501,10 @@ def cancel_job(job_id: str, auth: AuthPayload) -> JobStatusResponse:
 
         return get_job_status(job_id)
 
-    idx = read_idx()
-    job_row = idx.get("jobs", {}).get(job_id)
-    if job_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found for job_id={job_id}",
-        )
-
-    source_video_id = job_row.get("source_video_id")
-    source_record = idx.get("videos", {}).get(source_video_id)
-    if source_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Source video not found for job_id={job_id}",
-        )
-    if auth.subject != source_record.get("uploaded_by"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cancel not authorized for this job.",
-        )
-
-    status_value = job_row.get("status") or ApiJobStatus.queued.value
-    if status_value in {ApiJobStatus.succeeded.value, ApiJobStatus.failed.value}:
-        log_event(_logger, "cancel_job_already_terminal", job_id=job_id, status=status_value)
-        return _job_response_from_json(job_row)
-
-    runtime_params = job_row.get("runtime_params") or {}
-    if not isinstance(runtime_params, dict):
-        runtime_params = {}
-
-    exit_code = 130
-    error_summary = _CANCELLED_ERROR_SUMMARY
-
-    if status_value == ApiJobStatus.queued.value:
-        log_event(_logger, "cancel_job_queued", job_id=job_id, subject=auth.subject)
-    elif status_value == ApiJobStatus.running.value:
-        log_event(_logger, "cancel_job_running", job_id=job_id, subject=auth.subject)
-        execution_backend = (job_row.get("execution_backend") or runtime_params.get("execution_backend") or settings.execution_backend).strip().lower()
-        strategy = get_execution_strategy(execution_backend)
-        identifier = job_row.get("pod_id") or runtime_params.get("pod_id") or job_row.get("container_name") or runtime_params.get("container_name")
-        if identifier:
-            termination = strategy.terminate(identifier, runtime_params)
-            if termination.exit_code is not None:
-                exit_code = termination.exit_code
-            if termination.state == "running" and termination.error_summary:
-                error_summary = f"{_CANCELLED_ERROR_SUMMARY}. Termination warning: {termination.error_summary}"
-
-    update_job_completion(
-        job_id=job_id,
-        status_value=ApiJobStatus.failed,
-        exit_code=exit_code,
-        error_summary=error_summary,
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Database is required for job cancellation.",
     )
-    log_event(_logger, "cancel_job_completed", job_id=job_id, subject=auth.subject, exit_code=exit_code)
-
-    return get_job_status(job_id)
 
 
 def _relpath_under_data_root(path: Path) -> Path:
@@ -775,17 +537,14 @@ def _write_tree_to_zip(zip_file: zipfile.ZipFile, source_path: Path) -> int:
 
 
 def build_associated_artifacts_archive(source_video_id: str, auth: AuthPayload) -> Path:
-    index_data = read_idx()
-    videos = index_data.get("videos", {})
-
-    source_record = videos.get(source_video_id)
+    source_record = load_video_record(source_video_id)
     if source_record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Video not found for video_id={source_video_id}",
         )
 
-    owner_subject = source_record.get("uploaded_by")
+    owner_subject = source_record.uploaded_by
     if auth.subject != owner_subject:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -798,23 +557,28 @@ def build_associated_artifacts_archive(source_video_id: str, auth: AuthPayload) 
 
     written_files = 0
     seen_paths: set[Path] = set()
-    source_storage_path = Path(source_record.get("storage_path", ""))
+    source_storage_path = Path(source_record.storage_path)
 
     with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         if source_storage_path.is_file():
             written_files += _write_tree_to_zip(zip_file, source_storage_path)
             seen_paths.add(source_storage_path.resolve())
 
-        for row in index_data.get("associations", {}).get(source_video_id, []):
-            result_video_id = row.get("result_video_id")
-            if not result_video_id:
-                continue
+        with session_scope() as session:
+            jobs = (
+                session.query(JobRecord)
+                .filter(JobRecord.source_video_id == source_video_id)
+                .order_by(JobRecord.created_at.desc())
+                .all()
+            )
+            rows = [job.result_video_id for job in jobs if job.result_video_id]
 
-            result_record = videos.get(result_video_id)
+        for row in rows:
+            result_record = load_video_record(row)
             if result_record is None:
                 continue
 
-            storage_path = Path(result_record.get("storage_path", ""))
+            storage_path = Path(result_record.storage_path)
             if not storage_path.exists():
                 continue
 
@@ -846,24 +610,21 @@ def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
             detail=f"Job artifacts not available for job_id={job_id}",
         )
 
-    index_data = read_idx()
-    videos = index_data.get("videos", {})
-
-    source_record = videos.get(source_video_id)
+    source_record = load_video_record(source_video_id)
     if source_record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Source video not found for job_id={job_id}",
         )
 
-    owner_subject = source_record.get("uploaded_by")
+    owner_subject = source_record.uploaded_by
     if auth.subject != owner_subject:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Download not authorized for this video.",
         )
 
-    result_record = videos.get(result_video_id)
+    result_record = load_video_record(result_video_id)
     if result_record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -875,8 +636,8 @@ def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
     archive_file.close()
 
     written_files = 0
-    source_storage_path = Path(source_record.get("storage_path", ""))
-    result_storage_path = Path(result_record.get("storage_path", ""))
+    source_storage_path = Path(source_record.storage_path)
+    result_storage_path = Path(result_record.storage_path)
 
     with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         if source_storage_path.is_file():
