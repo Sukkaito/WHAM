@@ -72,9 +72,9 @@ def register_job_submission(
     job_name: str,
     transform_type: TransformType,
     source_video_id: str,
-    result_video_id: str,
-    result_filename: str,
-    result_storage_path: str,
+    result_video_id: str | None,
+    result_filename: str | None,
+    result_storage_path: str | None,
     tracking_results_path: str | None,
     slam_results_path: str | None,
     runtime_params: dict[str, Any],
@@ -116,19 +116,20 @@ def register_job_submission(
         )
         session.add(JobRecord(**kwargs))
 
-    upsert_video_record(
-        video_id=result_video_id,
-        source_filename=result_filename,
-        stored_filename=result_filename,
-        storage_path=result_storage_path,
-        content_type="video/mp4",
-        uploaded_by=runtime_params.get("auth_subject"),
-        size_bytes=None,
-        kind="derived",
-        status=ApiJobStatus.queued.value,
-        source_video_id=source_video_id,
-        transform_type=transform_type.value,
-    )
+    if result_video_id and result_filename and result_storage_path:
+        upsert_video_record(
+            video_id=result_video_id,
+            source_filename=result_filename,
+            stored_filename=result_filename,
+            storage_path=result_storage_path,
+            content_type="video/mp4",
+            uploaded_by=runtime_params.get("auth_subject"),
+            size_bytes=None,
+            kind="derived",
+            status=ApiJobStatus.queued.value,
+            source_video_id=source_video_id,
+            transform_type=transform_type.value,
+        )
 
 
 
@@ -604,7 +605,7 @@ def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
     source_video_id = job.source_video_id
     result_video_id = job.result_video_id
 
-    if source_video_id is None or result_video_id is None:
+    if source_video_id is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job artifacts not available for job_id={job_id}",
@@ -624,12 +625,15 @@ def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
             detail="Download not authorized for this video.",
         )
 
-    result_record = load_video_record(result_video_id)
-    if result_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Derived video not found for job_id={job_id}",
-        )
+    runtime_output_dir: Path | None = None
+    if _database_ready():
+        with session_scope() as session:
+            db_job = session.get(JobRecord, job_id)
+            runtime_params = db_job.runtime_params if db_job is not None else None
+            if isinstance(runtime_params, dict):
+                output_dir = runtime_params.get("output_dir") or runtime_params.get("output_pth")
+                if isinstance(output_dir, str) and output_dir.strip():
+                    runtime_output_dir = settings.wham_data_dir / output_dir.strip().lstrip("/")
 
     archive_file = tempfile.NamedTemporaryFile(prefix=f"{job_id}__artifacts_", suffix=".zip", delete=False)
     archive_path = Path(archive_file.name)
@@ -637,17 +641,26 @@ def build_job_artifacts_archive(job_id: str, auth: AuthPayload) -> Path:
 
     written_files = 0
     source_storage_path = Path(source_record.storage_path)
-    result_storage_path = Path(result_record.storage_path)
 
     with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         if source_storage_path.is_file():
             written_files += _write_tree_to_zip(zip_file, source_storage_path)
 
-        if result_storage_path.exists():
-            written_files += _write_tree_to_zip(
-                zip_file,
-                result_storage_path.parent if result_storage_path.is_file() else result_storage_path,
-            )
+        if result_video_id:
+            result_record = load_video_record(result_video_id)
+            if result_record is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Derived video not found for job_id={job_id}",
+                )
+            result_storage_path = Path(result_record.storage_path)
+            if result_storage_path.exists():
+                written_files += _write_tree_to_zip(
+                    zip_file,
+                    result_storage_path.parent if result_storage_path.is_file() else result_storage_path,
+                )
+        elif runtime_output_dir and runtime_output_dir.exists():
+            written_files += _write_tree_to_zip(zip_file, runtime_output_dir)
 
     if written_files == 0:
         archive_path.unlink(missing_ok=True)

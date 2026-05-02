@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class TransformType(str, Enum):
     pose2d = "pose2d"
     pose3d = "pose3d"
+    custom_v1 = "custom_v1"
 
 
 class JobStatus(str, Enum):

@@ -20,6 +20,7 @@ from app.services.job_service import (
     list_jobs as load_jobs,
     get_job_status as load_job_status,
 )
+from app.services.custom_v1_service import submit_custom_v1
 from app.services.pose2d_service import submit_pose2d
 from app.services.pose3d_service import submit_pose3d
 
@@ -41,6 +42,14 @@ def submit_pose3d_job(request: Request, payload: PoseJobSubmitRequest) -> PoseJo
     auth = get_request_auth(request)
     logger.info("submit_pose3d_job source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
     return submit_pose3d(payload, auth)
+
+
+@router.post("/custom_v1/jobs", response_model=PoseJobAcceptedResponse)
+def submit_custom_v1_job(request: Request, payload: PoseJobSubmitRequest) -> PoseJobAcceptedResponse:
+    """Submit a custom_v1 WHAM demo job."""
+    auth = get_request_auth(request)
+    logger.info("submit_custom_v1_job source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
+    return submit_custom_v1(payload, auth)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

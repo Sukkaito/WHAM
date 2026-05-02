@@ -184,3 +184,33 @@ def build_pose3d_pipeline_spec(
         "shell_command": shell_command,
         "output_dir": output_dir,
     }
+
+
+def build_custom_v1_pipeline_spec(
+    source_name: str,
+    job_id: str,
+    output_pth: str,
+    gpu_id: str,
+) -> dict[str, list[str] | str]:
+    source_arg = shlex.quote(f"/videos/{source_name}")
+    output_arg = shlex.quote(output_pth)
+    main_command = (
+        f"mkdir -p {output_arg} && "
+        f"python3 demo.py --video {source_arg} --output_pth {output_arg} --estimate_local_only --save_pkl"
+    )
+
+    shell_command = _build_logged_marker_shell_command(main_command, job_id)
+
+    docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-custom-v1-{job_id}", remove_on_exit=False)
+    docker_cmd.extend([
+        settings.docker_image,
+        "bash",
+        "-lc",
+        shell_command,
+    ])
+    return {
+        "docker_cmd": docker_cmd,
+        "runpod_entrypoint": to_runpod_entrypoint(shell_command),
+        "shell_command": shell_command,
+        "output_dir": output_pth,
+    }
