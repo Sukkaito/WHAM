@@ -143,6 +143,12 @@ class Settings:
             ".webm",
             ".m4v",
         }
+        self.cancel_jobs_on_startup = os.getenv("WHAM_CANCEL_JOBS_ON_STARTUP", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         
         # Log configuration at startup
         env_source = ".env file" if env_file.exists() else "defaults + OS environment"

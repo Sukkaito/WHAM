@@ -154,6 +154,10 @@ def notify_startup_requeue_slot_available() -> None:
 
 
 def requeue_unfinished_jobs() -> None:
+    if not settings.requeue_jobs_on_startup and not settings.cancel_jobs_on_startup:
+        log_event(_logger, "startup_requeue_disabled")
+        return
+    
     jobs = _next_unfinished_jobs()
     worker_count = max(settings.job_worker_count, 1)
     
@@ -165,8 +169,9 @@ def requeue_unfinished_jobs() -> None:
         worker_count=worker_count,
     )
     
-    if not settings.requeue_jobs_on_startup:
+    if settings.cancel_jobs_on_startup:
         # Cancel all unfinished jobs if requeue is disabled
+        log_event(_logger, "startup_cancel_unfinished_jobs", count=len(jobs))
         for job in jobs:
             job_id = job["job_id"]
             status_value = job.get("status")
@@ -177,7 +182,9 @@ def requeue_unfinished_jobs() -> None:
             )
             log_event(_logger, "startup_cancel_unfinished_job", job_id=job_id, status=status_value)
         return
-
+    
+    # If cancel queue disabled and requeue enabled
+    log_event(_logger, "startup_requeue_backlog_populate", count=len(jobs))
     # Requeue only as many jobs as there are workers, then refill one-for-one as workers free up.
     running_jobs = [job for job in jobs if job.get("status") == ApiJobStatus.running.value]
     queued_jobs = [job for job in jobs if job.get("status") == ApiJobStatus.queued.value]
