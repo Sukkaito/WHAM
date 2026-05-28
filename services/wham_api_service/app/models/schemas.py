@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,7 @@ class TransformType(str, Enum):
     pose2d = "pose2d"
     pose3d = "pose3d"
     custom_v1 = "custom_v1"
+    pose_grade = "pose_grade"
 
 
 class JobStatus(str, Enum):
@@ -33,12 +34,26 @@ class PoseJobSubmitRequest(BaseModel):
     source_video_id: str = Field(..., min_length=1)
 
 
+class PoseGradeJobSubmitRequest(BaseModel):
+    source_video_id_a: str = Field(..., min_length=1)
+    source_video_id_b: str = Field(..., min_length=1)
+
+
 class PoseJobAcceptedResponse(BaseModel):
     job_id: str
     job_name: str
     transform_type: TransformType
     source_video_id: str
     result_video_id: Optional[str] = None
+    status: JobStatus
+
+
+class PoseGradeJobAcceptedResponse(BaseModel):
+    job_id: str
+    job_name: str
+    transform_type: TransformType
+    source_video_id_a: str
+    source_video_id_b: str
     status: JobStatus
 
 
@@ -49,6 +64,7 @@ class JobStatusResponse(BaseModel):
     source_video_id: Optional[str] = None
     result_video_id: Optional[str] = None
     status: JobStatus
+    job_output: Optional[Dict[str, Any]] = None
     container_name: Optional[str] = None
     pod_id: Optional[str] = None
     pod_name: Optional[str] = None

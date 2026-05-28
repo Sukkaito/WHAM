@@ -105,6 +105,49 @@ def _build_pose3d_shell_command(
     return inner
 
 
+def _build_pose_grade_shell_command(
+    source_name_a: str,
+    source_name_b: str,
+    output_dir_a: str,
+    output_dir_b: str,
+    tracking_results_path_a: str,
+    tracking_results_path_b: str,
+    source_video_id_a: str | None = None,
+    source_video_id_b: str | None = None,
+    slam_results_path_a: str | None = None,
+    slam_results_path_b: str | None = None,
+    score_path: str | None = None,
+) -> str:
+    source_a = shlex.quote(f"/videos/{source_name_a}")
+    source_b = shlex.quote(f"/videos/{source_name_b}")
+    out_a = shlex.quote(output_dir_a)
+    out_b = shlex.quote(output_dir_b)
+    track_a = shlex.quote(tracking_results_path_a)
+    track_b = shlex.quote(tracking_results_path_b)
+
+    parts = [
+        "python3 scripts/grade_poses.py",
+        f"--video_a {source_a}",
+        f"--video_b {source_b}",
+        f"--output_dir_a {out_a}",
+        f"--output_dir_b {out_b}",
+        f"--tracking_results_a {track_a}",
+        f"--tracking_results_b {track_b}",
+    ]
+    if slam_results_path_a:
+        parts.append(f"--slam_results_a {shlex.quote(slam_results_path_a)}")
+    if slam_results_path_b:
+        parts.append(f"--slam_results_b {shlex.quote(slam_results_path_b)}")
+    if source_video_id_a:
+        parts.append(f"--source_video_id_a {shlex.quote(source_video_id_a)}")
+    if source_video_id_b:
+        parts.append(f"--source_video_id_b {shlex.quote(source_video_id_b)}")
+    if score_path:
+        parts.append(f"--score_path {shlex.quote(score_path)}")
+
+    return " ".join(parts)
+
+
 def build_pose2d_pipeline_spec(
     source_name: str,
     job_id: str,
@@ -213,4 +256,52 @@ def build_custom_v1_pipeline_spec(
         "runpod_entrypoint": to_runpod_entrypoint(shell_command),
         "shell_command": shell_command,
         "output_dir": output_pth,
+    }
+
+
+def build_pose_grade_pipeline_spec(
+    *,
+    job_id: str,
+    gpu_id: str,
+    source_name_a: str,
+    source_name_b: str,
+    output_dir_a: str,
+    output_dir_b: str,
+    tracking_results_path_a: str,
+    tracking_results_path_b: str,
+    source_video_id_a: str | None = None,
+    source_video_id_b: str | None = None,
+    slam_results_path_a: str | None = None,
+    slam_results_path_b: str | None = None,
+    score_path: str | None = None,
+) -> dict[str, list[str] | str]:
+    main_command = _build_pose_grade_shell_command(
+        source_name_a=source_name_a,
+        source_name_b=source_name_b,
+        output_dir_a=output_dir_a,
+        output_dir_b=output_dir_b,
+        tracking_results_path_a=tracking_results_path_a,
+        tracking_results_path_b=tracking_results_path_b,
+        source_video_id_a=source_video_id_a,
+        source_video_id_b=source_video_id_b,
+        slam_results_path_a=slam_results_path_a,
+        slam_results_path_b=slam_results_path_b,
+        score_path=score_path,
+    )
+
+    shell_command = _build_logged_marker_shell_command(main_command, job_id)
+
+    docker_cmd = _get_docker_base_args(gpu_id, container_name=f"wham-pose-grade-{job_id}", remove_on_exit=False)
+    docker_cmd.extend([
+        settings.docker_image,
+        "bash",
+        "-lc",
+        shell_command,
+    ])
+    return {
+        "docker_cmd": docker_cmd,
+        "runpod_entrypoint": to_runpod_entrypoint(shell_command),
+        "shell_command": shell_command,
+        "output_dir_a": output_dir_a,
+        "output_dir_b": output_dir_b,
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -12,7 +13,6 @@ from app.core.logging import get_logger, log_event
 from app.core.settings import settings
 from app.db.models import Base, JobRecord, JobStatus as DbJobStatus, TransformType as DbTransformType, VideoRecord
 from app.db.session import get_engine, session_scope
-from app.models.lineage import VideoRecordDTO
 from app.models.schemas import AuthPayload, JobListResponse, JobStatus as ApiJobStatus
 from app.models.schemas import JobStatusResponse, TransformType
 from .execution_strategy import get_execution_strategy
@@ -36,6 +36,35 @@ def _truncate_error_summary(error_summary: str | None) -> str | None:
     if len(value) <= _ERROR_SUMMARY_MAX_LEN:
         return value
     return value[: _ERROR_SUMMARY_MAX_LEN - 3] + "..."
+
+
+def _load_score_updates(runtime_params: dict[str, Any] | None) -> dict[str, Any] | None:
+    if runtime_params is None or not isinstance(runtime_params, dict):
+        runtime_params = {}
+
+    score_path = runtime_params.get("score_path")
+    if not score_path:
+        return None
+
+    try:
+        score_file = Path(score_path)
+        if not score_file.is_file():
+            return None
+        payload = json.loads(score_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    return {"job_output": payload}
+
+
+def _job_output_from_runtime(runtime_params: dict[str, Any]) -> dict[str, Any] | None:
+    job_output = runtime_params.get("job_output")
+    if isinstance(job_output, dict):
+        return job_output
+    return None
 
 
 def _database_ready() -> bool:
@@ -89,8 +118,10 @@ def register_job_submission(
     now = _now()
     db_runtime_params = dict(runtime_params)
     db_runtime_params.setdefault("job_name", job_name)
-    db_runtime_params.setdefault("result_filename", result_filename)
-    db_runtime_params.setdefault("result_storage_path", result_storage_path)
+    if result_filename is not None:
+        db_runtime_params.setdefault("result_filename", result_filename)
+    if result_storage_path is not None:
+        db_runtime_params.setdefault("result_storage_path", result_storage_path)
     db_runtime_params.setdefault("tracking_results_path", tracking_results_path)
     db_runtime_params.setdefault("slam_results_path", slam_results_path)
     db_runtime_params.setdefault("execution_backend", runtime_params.get("execution_backend", settings.execution_backend))
@@ -226,6 +257,14 @@ def update_job_completion(
                 if video is not None:
                     video.status = status_value.value
 
+            if status_value == ApiJobStatus.succeeded:
+                score_updates = _load_score_updates(job.runtime_params)
+                if score_updates:
+                    if isinstance(job.runtime_params, dict):
+                        job.runtime_params.update(score_updates)
+                    else:
+                        job.runtime_params = score_updates
+
     return
 
 
@@ -240,6 +279,7 @@ def _job_to_response(job: JobRecord) -> JobStatusResponse:
         source_video_id=job.source_video_id,
         result_video_id=job.result_video_id,
         status=_to_api_status(job.status),
+        job_output=_job_output_from_runtime(runtime_params),
         container_name=job.container_name or runtime_params.get("container_name"),
         pod_id=job.pod_id or runtime_params.get("pod_id"),
         pod_name=job.pod_name or runtime_params.get("pod_name"),
@@ -419,6 +459,7 @@ def list_jobs(
                     source_video_id=row.get("source_video_id"),
                     result_video_id=row.get("result_video_id"),
                     status=ApiJobStatus(row["status"]),
+                    job_output=_job_output_from_runtime(runtime_params),
                     container_name=row.get("container_name") or runtime_params.get("container_name"),
                     pod_id=row.get("pod_id") or runtime_params.get("pod_id"),
                     pod_name=row.get("pod_name") or runtime_params.get("pod_name"),

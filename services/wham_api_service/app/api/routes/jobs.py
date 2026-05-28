@@ -10,6 +10,8 @@ from app.models.schemas import (
     JobListResponse,
     JobStatus,
     JobStatusResponse,
+    PoseGradeJobAcceptedResponse,
+    PoseGradeJobSubmitRequest,
     PoseJobAcceptedResponse,
     PoseJobSubmitRequest,
     TransformType,
@@ -23,6 +25,7 @@ from app.services.job_service import (
 from app.services.custom_v1_service import submit_custom_v1
 from app.services.pose2d_service import submit_pose2d
 from app.services.pose3d_service import submit_pose3d
+from app.services.pose_grade_service import submit_pose_grade
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,6 +53,33 @@ def submit_custom_v1_job(request: Request, payload: PoseJobSubmitRequest) -> Pos
     auth = get_request_auth(request)
     logger.info("submit_custom_v1_job source_video_id=%s subject=%s", payload.source_video_id, auth.subject)
     return submit_custom_v1(payload, auth)
+
+
+@router.post("/pose-grade/jobs", response_model=PoseGradeJobAcceptedResponse)
+def submit_pose_grade_job(request: Request, payload: PoseGradeJobSubmitRequest) -> PoseGradeJobAcceptedResponse:
+    """Submit a pose similarity grading job."""
+    auth = get_request_auth(request)
+    logger.info(
+        "submit_pose_grade_job source_video_id_a=%s source_video_id_b=%s subject=%s",
+        payload.source_video_id_a,
+        payload.source_video_id_b,
+        auth.subject,
+    )
+    try:
+        return submit_pose_grade(payload, auth)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "submit_pose_grade_job failed source_video_id_a=%s source_video_id_b=%s subject=%s",
+            payload.source_video_id_a,
+            payload.source_video_id_b,
+            auth.subject,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="pose grade submission failed",
+        )
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
