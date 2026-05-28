@@ -83,8 +83,8 @@ def submit_pose_grade(payload: PoseGradeJobSubmitRequest, auth: AuthPayload) -> 
     else:
         gpu_id = settings.docker_gpu_id or settings.default_gpu_id
 
-    stem_a = Path(src_a["stored_filename"]).stem
-    stem_b = Path(src_b["stored_filename"]).stem
+    stem_a = Path(src_a.stored_filename).stem
+    stem_b = Path(src_b.stored_filename).stem
     output_pth = f"output/pose_grade/{job_id}"
     output_dir_a = f"{output_pth}/{stem_a}"
     output_dir_b = f"{output_pth}/{stem_b}"
@@ -110,15 +110,15 @@ def submit_pose_grade(payload: PoseGradeJobSubmitRequest, auth: AuthPayload) -> 
         "pod_name": pod_name,
         "execution_backend": settings.execution_backend,
         "gpu_id": gpu_id,
-        "video_a": f"/videos/{src_a['stored_filename']}",
-        "video_b": f"/videos/{src_b['stored_filename']}",
-        "source_filename": src_a["stored_filename"],
-        "source_filename_a": src_a["stored_filename"],
-        "source_filename_b": src_b["stored_filename"],
+        "video_a": f"/videos/{src_a.stored_filename}",
+        "video_b": f"/videos/{src_b.stored_filename}",
+        "source_filename": src_a.stored_filename,
+        "source_filename_a": src_a.stored_filename,
+        "source_filename_b": src_b.stored_filename,
         "source_video_id_a": payload.source_video_id_a,
         "source_video_id_b": payload.source_video_id_b,
-        "source_video_path_a": str(src_a["storage_path"]),
-        "source_video_path_b": str(src_b["storage_path"]),
+        "source_video_path_a": str(src_a.storage_path),
+        "source_video_path_b": str(src_b.storage_path),
         "output_dir_a": output_dir_a,
         "output_dir_b": output_dir_b,
         "tracking_results_path_a": tracking_a,
@@ -135,8 +135,8 @@ def submit_pose_grade(payload: PoseGradeJobSubmitRequest, auth: AuthPayload) -> 
     cmd_spec = build_pose_grade_pipeline_spec(
         job_id=job_id,
         gpu_id=gpu_id,
-        source_name_a=src_a["stored_filename"],
-        source_name_b=src_b["stored_filename"],
+        source_name_a=src_a.stored_filename,
+        source_name_b=src_b.stored_filename,
         output_dir_a=_to_container_output_path(settings.wham_data_dir / output_dir_a),
         output_dir_b=_to_container_output_path(settings.wham_data_dir / output_dir_b),
         tracking_results_path_a=_to_container_output_path(Path(tracking_a)),
