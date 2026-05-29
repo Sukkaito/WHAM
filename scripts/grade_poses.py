@@ -19,7 +19,7 @@ def _run_extract_2d(video_path: str, output_dir: str) -> None:
         "--device",
         "cuda:0",
     ]
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    result = subprocess.run(cmd, check=False, text=True)
     if result.returncode != 0:
         raise RuntimeError(
             "extract_2d_poses.py failed: "
@@ -221,5 +221,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:
-        print(f"[grade_poses] Failed: {exc}", file=sys.stderr)
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[grade_poses] Failed: {tb}", file=sys.stderr)
         sys.exit(1)
