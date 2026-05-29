@@ -206,7 +206,7 @@ def main() -> int:
         "score": score,
         "raw_distance": distance,
         "comparison_method": "dtw",
-        "selected_track_ids": [track_id_a, track_id_b],
+        "selected_track_ids": [track_id_a.item(), track_id_b.item()],
     }
     # source_video_ids not use for now, thus optional
     if args.source_video_id_a and args.source_video_id_b:
