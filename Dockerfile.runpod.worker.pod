@@ -1,0 +1,61 @@
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
+
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+
+COPY ./third-party /code/third-party
+
+WORKDIR /code/third-party/ViTPose
+RUN pip install -v -e .
+
+WORKDIR /code/third-party/DPVO
+
+RUN wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
+RUN apt-get update && \
+    apt-get install -y unzip && \
+    unzip eigen-3.4.0.zip -d ./thirdparty && \
+    rm -rf eigen-3.4.0.zip
+
+# TorchScatter
+RUN pip install https://data.pyg.org/whl/torch-2.2.0%2Bcu121/torch_scatter-2.1.2%2Bpt22cu121-cp310-cp310-linux_x86_64.whl
+
+# RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
+# RUN mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600
+
+# Warning: Running on Ubuntu 22.04, but the CUDA repository is for Ubuntu 20.04. This may cause compatibility issues.
+RUN wget https://developer.download.nvidia.com/compute/cuda/11.3.1/local_installers/cuda-repo-ubuntu2004-11-3-local_11.3.1-465.19.01-1_amd64.deb
+RUN dpkg -i cuda-repo-ubuntu2004-11-3-local_11.3.1-465.19.01-1_amd64.deb
+
+RUN apt-key add /var/cuda-repo-ubuntu2004-11-3-local/*.pub
+RUN apt update && apt install -y cuda-toolkit-11-3 gcc-9 g++-9
+
+
+RUN CC=gcc-9 CXX=g++-9 pip install .
+
+# Might need to uninstall Ubuntu 20.04 local repo
+# rm -rf /var/cuda-repo-ubuntu2004-11-3-local
+# rm /etc/apt/sources.list.d/cuda*
+# apt update
+
+COPY ./requirements.txt /code/requirements.txt
+COPY ./services/wham_api_service/requirements.txt /code/services/wham_api_service/requirements.txt
+
+WORKDIR /code
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r services/wham_api_service/requirements.txt
+
+# Pytorch3D
+RUN pip install https://github.com/MiroPsota/torch_packages_builder/releases/download/pytorch3d-0.7.8/pytorch3d-0.7.8%2Bpt2.2.0cu121-cp310-cp310-linux_x86_64.whl
+
+COPY . /code
+
+ENV PYTHONUNBUFFERED=1
+
+ENV OMP_NUM_THREADS=2
+ENV MKL_NUM_THREADS=2
+ENV OPENBLAS_NUM_THREADS=2
+ENV NUMEXPR_NUM_THREADS=2
+
+ENV KMP_AFFINITY=disabled
+ENV KMP_INIT_AT_FORK=FALSE
+ENV MPLBACKEND=Agg
+ENV PYTHONFAULTHANDLER=1
